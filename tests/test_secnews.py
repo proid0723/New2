@@ -286,6 +286,43 @@ class RunTests(unittest.TestCase):
         self.assertIn("05시까지", notices[0][0])
         self.assertIn("06시에", notices[0][0])
 
+    def test_why_explains_what_became_of_an_article(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
+        d = "Wed, 15 Oct 2026 01:00:00 +0000"
+        feed = (f'<?xml version="1.0"?><rss version="2.0"><channel>'
+                f'<item><title>Zero-day actively exploited in router</title><link>https://e.com/a?utm=x</link>'
+                f'<pubDate>{d}</pubDate></item>'
+                f'<item><title>Company opens new office</title><link>https://e.com/b</link>'
+                f'<pubDate>{d}</pubDate></item>'
+                f'<item><title>Bank malware campaign spreads</title><link>https://e.com/c</link>'
+                f'<pubDate>{d}</pubDate></item></channel></rss>').encode()
+        drop = lambda items, told=(): [it for it in items if "Bank" not in it["title"]
+                                       or it.update(drop_reason="gemini_irrelevant")]
+        secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True,
+                    classify=drop)
+        state = secnews.load_state(self.state)
+        self.assertIn("발송했어요", secnews.explain(state, "https://www.e.com/a"))
+        self.assertIn("키워드 점수", secnews.explain(state, "https://e.com/b"))
+        self.assertIn("AI(Gemini)", secnews.explain(state, "malware campaign"))
+        self.assertIn("기록이 없어요", secnews.explain(state, "https://other.com/x"))
+
+    def test_weekly_report_on_monday_morning(self):
+        cfg = dict(CONFIG, feeds=[{"name": "Quiet feed", "url": "q"}, {"name": "F", "url": "f"}])
+        d = "Wed, 15 Oct 2026 01:00:00 +0000"
+        busy = self.rss(("Zero-day actively exploited in router", d))
+        alerts = []
+        fetch = lambda u: busy if u == "f" else self.rss()
+        secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=fetch, bootstrap_send=True, alert=alerts.append)
+        monday = datetime(2026, 10, 19, 0, 1, tzinfo=timezone.utc)  # 09:01 KST
+        secnews.run(cfg, self.state, self.sender, now=monday, fetcher=fetch, alert=alerts.append)
+        secnews.run(cfg, self.state, self.sender, now=monday + timedelta(hours=1), fetcher=fetch,
+                    alert=alerts.append)
+        reports = [a for a in alerts if "주간 리포트" in a]
+        self.assertEqual(len(reports), 1)
+        self.assertIn("발송 1건", reports[0])
+        self.assertIn("0건인 출처: Quiet feed", reports[0])
+        self.assertEqual(secnews.load_state(self.state)["stats"]["runs"], 1)  # counting starts again
+
     def test_story_sent_earlier_is_not_sent_again_from_another_outlet(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
         d = "Wed, 15 Oct 2026 01:00:00 +0000"
@@ -830,6 +867,14 @@ class SubscriberTests(unittest.TestCase):
         self.assertIn("구독 중: 2명", stats[0][1])
         self.assertIn("승인 대기: 1명", stats[0][1])
 
+    def test_admin_why_question(self):
+        asked = []
+        secnews.sync_subscribers(self.path, [upd(1, 99, "/why https://e.com/a"), upd(2, 11, "/why x")],
+                                 key=self.key, admin="99", send=lambda c, t, m=None: self.sent.append((c, t)),
+                                 why=lambda q: asked.append(q) or "answer")
+        self.assertEqual(asked, ["https://e.com/a"])  # only the admin's question
+        self.assertIn(("99", "answer"), self.sent)
+
     def test_hint_under_buttons_goes_away_with_the_result(self):
         self.approval_sync([upd(1, 11, "/start")])
         self.assertIn(secnews.APPROVE_HINT, self.sent[1][1])
@@ -940,7 +985,7 @@ class SubscriberTests(unittest.TestCase):
                 "date": None, "summary": "", "security_only": False, "min_score": None}
         sent_to = []
         saved = (secnews.collect, secnews.telegram_send, secnews.telegram_get_updates, dict(os.environ))
-        secnews.collect = lambda config, fetcher, failed=None: [dict(item)]
+        secnews.collect = lambda config, fetcher, failed=None, counts=None: [dict(item)]
         secnews.telegram_send = lambda token, chat, text, **kw: sent_to.append(chat)
         secnews.telegram_get_updates = lambda *a, **k: self.fail("test mode must not read updates")
         os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", SECNEWS_STATE=str(state), SECNEWS_ONLY_CHATS="999")

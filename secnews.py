@@ -465,7 +465,12 @@ def load_state(path):
         return None
 
 
-def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=None, instant_checked=None):
+# Bookkeeping that only some runs update; save_state keeps the stored copy when a run passes none.
+KEPT_STATE = ("night_notice", "decisions", "stats", "report_week")
+
+
+def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=None, instant_checked=None,
+               **extra):
     cutoff = (now - STATE_RETENTION).timestamp()
     seen = {k: t for k, t in seen.items() if t >= cutoff}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -474,10 +479,17 @@ def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=Non
              "recent": recent or [], "feed_failures": feed_failures or {}}
     if instant_checked is not None:
         state["instant_checked"] = instant_checked
-    try:  # the night the bedtime notice went out, written by night_notice
-        state["night_notice"] = json.loads(path.read_text(encoding="utf-8"))["night_notice"]
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        old = {}
+    for k in KEPT_STATE:
+        if k in extra:
+            state[k] = extra[k]
+        elif isinstance(old, dict) and k in old:
+            state[k] = old[k]
+    if "decisions" in state:  # /why looks back three days
+        state["decisions"] = {u: d for u, d in state["decisions"].items() if d[1] >= now.timestamp() - 3 * 86400}
     tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
 
@@ -822,9 +834,11 @@ class GeminiClassifier:
             focus = bool(r.get("focus"))
             if r.get("duplicate") or r.get("already_sent"):
                 dups += 1
+                it["drop_reason"] = "gemini_dup"
                 continue
             if not r.get("relevant") or (it.get("focus_only") and not focus):
                 dropped += 1
+                it["drop_reason"] = "gemini_irrelevant" if not r.get("relevant") else "gemini_focus_only"
                 continue
             if isinstance(r.get("story"), str) and r["story"].strip():
                 it["story"] = r["story"].strip().lower()
@@ -1144,7 +1158,8 @@ def _chat_name(chat):
     return (name or "?") + (f" (@{chat['username']})" if chat.get("username") else "")
 
 
-def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, welcome=TEXTS["welcome"]):
+def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, welcome=TEXTS["welcome"],
+                     why=None):
     """Subscribe chats that message the bot and unsubscribe ones that send /stop.
 
     Without an admin, /start (or the bot being added to a group) subscribes at once, even after an
@@ -1161,7 +1176,7 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
     pending, denied, former = dict(subs["pending"]), dict.fromkeys(subs["denied"]), dict.fromkeys(subs["former"])
     last_seen = subs.get("last_update", 0)
     added, removed, requests, rejected, presses, tests = [], [], [], [], [], []
-    stats_asked = False
+    stats_asked, questions = False, []
     if updates:
         kinds = [k for u in updates for k in ("message", "callback_query", "my_chat_member") if k in u]
         log(f"telegram updates: {len(updates)} ({', '.join(sorted(set(kinds)))}), "
@@ -1209,7 +1224,8 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
             text = (msg.get("text") or "").strip().lower()
             action = ("stop" if text.startswith("/stop") else "start" if text.startswith("/start")
                       else "test" if text.startswith("/test")
-                      else "stats" if text.startswith("/stats") else "chat")
+                      else "stats" if text.startswith("/stats")
+                      else "why" if text.startswith("/why") else "chat")
         cid = str(chat["id"])
         if action == "test":
             # The admin rehearses a request: same messages and buttons, nothing stored.
@@ -1218,6 +1234,10 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
             continue
         if action == "stats":
             stats_asked = stats_asked or bool(admin and cid == admin)  # others get no answer
+            continue
+        if action == "why":
+            if admin and cid == admin:
+                questions.append(re.sub(r"^/why(@\S+)?", "", (msg.get("text") or "").strip()).strip())
             continue
         if action == "stop":
             if cid in ids:
@@ -1272,6 +1292,8 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
             say(admin, f"📊 <b>구독 현황</b> ({datetime.now(KST):%m/%d %H:%M})\n"
                        f"· 구독 중: {sum(1 for c in ids if c not in stopped)}명\n"
                        f"· 승인 대기: {len(pending)}명\n· 해지: {len(stopped)}명\n· 거절: {len(denied)}명")
+        for q in questions:
+            say(admin, why(q) if why else "이 기능을 쓸 수 없어요.")
         for cid in requests:
             say(cid, REQUESTED)
             say(admin, f"🔔 <b>새 구독 신청</b>\n이름: {html.escape(pending[cid])}\nID: <code>{cid}</code>"
@@ -1337,7 +1359,7 @@ def feed_label(feed, n):
     return f"source {n + 1}" if os.environ.get("GITHUB_ACTIONS") else feed["name"]
 
 
-def collect(config, fetcher=fetch, failed=None):
+def collect(config, fetcher=fetch, failed=None, counts=None):
     items = []
     for n, feed in enumerate(config["feeds"]):
         try:
@@ -1350,6 +1372,8 @@ def collect(config, fetcher=fetch, failed=None):
                 it["min_score"] = feed.get("min_score")
                 it["focus_only"] = feed.get("focus_only", False)
             log(f"{feed_label(feed, n)}: {len(got)} items")
+            if counts is not None:
+                counts[str(n)] = len(got)
             items.extend(got)
         except Exception as e:  # one broken feed must not stop the others
             log(f"warning: {feed_label(feed, n)} failed: {e}")
@@ -1507,12 +1531,21 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     recent = [r for r in (state or {}).get("recent", []) if now.timestamp() - r[2] <= max_age.total_seconds()]
     sent_cves = {c for r in recent for c in r[1]}
 
-    fresh, keys, fresh_titles, failed = [], set(), [], []
-    for item in collect(config, fetcher, failed):
+    fresh, keys, fresh_titles, failed, counts = [], set(), [], [], {}
+    decisions = dict((state or {}).get("decisions", {}))
+    ts = now.timestamp()
+
+    def decide(item, reason):
+        """Remember for /why what became of an item (by link, else by title)."""
+        decisions[item.get("link") or title_key(item)] = [reason, ts, item["title"][:120]]
+
+    for item in collect(config, fetcher, failed, counts):
         if item["date"] and item["date"] > now + timedelta(hours=1):
             # Some Korean feeds stamp Korean time as GMT, which puts their articles 9 hours ahead.
             item["date"] = min(item["date"] - timedelta(hours=9), now)
         if item["date"] and now - item["date"] > max_age:
+            if not item["id"].startswith("kev:") and (item.get("link") or title_key(item)) not in decisions:
+                decide(item, "old")  # the KEV catalog is mostly old entries; not worth remembering
             continue
         key, tkey = item_key(item), title_key(item)
         if key in seen or key in keys or tkey in seen or tkey in keys:
@@ -1526,19 +1559,33 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         fresh_titles.append(tkey)
 
     # Topic feeds and social channels carry much else; keep only security ones.
-    news = [it for _, it in fresh if not it.get("ransomware")
-            and it["score"] >= (it.get("min_score") or min_score)
-            and not (it["security_only"] and not it["security_hits"])
-            and not (it.get("focus_only") and not it.get("focus"))
-            and not (it.get("focus") and not it.get("focus_security", True))
-            and not already_told(it, recent, sent_cves)]
+    news = []
+    for it in (it for _, it in fresh if not it.get("ransomware")):
+        if it["score"] < (it.get("min_score") or min_score):
+            decide(it, "score")
+        elif it["security_only"] and not it["security_hits"]:
+            decide(it, "nosec")
+        elif it.get("focus_only") and not it.get("focus"):
+            decide(it, "focus_only")
+        elif it.get("focus") and not it.get("focus_security", True):
+            decide(it, "focus_nosec")
+        elif already_told(it, recent, sent_cves):
+            decide(it, "told")
+        else:
+            news.append(it)
     titles = [it["title"] for it in news if not it["id"].startswith("kev:")] + [r[0] for r in recent]
-    news = [it for it in news if not kev_covered(it, titles)]
+    for it in [it for it in news if kev_covered(it, titles)]:
+        decide(it, "kev")
+        news.remove(it)
     news.sort(key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
+    passed = len(news)
     if classify and news:
         # Gemini also spots stories sent in an earlier digest, across languages.
-        news = classify(news, [r[3] if len(r) > 3 and r[3] else r[0] for r in recent])
-        news.sort(key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
+        kept = classify(news, [r[3] if len(r) > 3 and r[3] else r[0] for r in recent])
+        for it in news:
+            if it not in kept:
+                decide(it, it.get("drop_reason", "gemini_irrelevant"))
+        news = sorted(kept, key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
     # The 06:00 round-up carries the whole night, so its caps are larger.
     factor = config.get("morning_cap_factor", 1.5) if morning(config, now) and not force else 1
     suffix = " · 🌅 밤사이 모음" if factor != 1 else ""
@@ -1549,7 +1596,12 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     digests = [(wording(config, title) + suffix, trim([it for it in news if bool(it.get("focus")) == focus],
                                                    capped(cap), config.get("max_per_source", 0)), categories)
                for focus, title, cap, categories in DIGESTS]
-    leaks = [it for _, it in fresh if it.get("ransomware") and ransomware_wanted(it, config)]
+    leaks = []
+    for it in (it for _, it in fresh if it.get("ransomware")):
+        if ransomware_wanted(it, config):
+            leaks.append(it)
+        else:
+            decide(it, "rw_filtered")
     leaks.sort(key=lambda it: (it["country"] not in config.get("ransomware_countries", ["KR"]),
                                -(it["date"] or now).timestamp()))
     digests.append((wording(config, "ransomware_title") + suffix, leaks[:capped("max_ransomware_per_run") or None],
@@ -1558,6 +1610,8 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if first_run and not bootstrap_send:
         log(f"first run: marking {len(fresh)} current items as seen without sending")
         digests = []
+        for _, it in fresh:
+            decide(it, "first_run")
 
     sent = []
     for title, items, categories in digests:
@@ -1572,6 +1626,8 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
                 raise TelegramError("message was not delivered to any chat")
         sent += items
     log(f"sent {len(sent)} of {len(fresh)} new items")
+    for it in news + leaks:
+        decide(it, "sent" if it in sent else "cap")
     # feeds.json "no_news_notice": "all" (silent message to everyone), "admin", or "off" (default).
     notice = config.get("no_news_notice", "off")
     if not sent and digests and notice != "off":
@@ -1582,7 +1638,6 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         elif not sender(text, silent=True):
             log("warning: the no-news notice was not delivered")
 
-    ts = now.timestamp()
     for key, _ in fresh:
         seen[key] = ts
     for tkey in fresh_titles:
@@ -1596,8 +1651,87 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if broken and alert:
         alert("⚠️ 보안 속보 봇: 다음 출처가 " + f"{FEED_ALERT_AFTER}번 연속 실패했어요 (주소 변경 가능성)\n"
               + "\n".join(f"· {html.escape(n)}" for n in broken))
-    save_state(state_path, seen, now, recent, failures, instant_checked=(state or {}).get("instant_checked"))
+
+    # Weekly numbers for the admin's Monday report.
+    stats = dict((state or {}).get("stats") or {"since": ts})
+    stats["runs"] = stats.get("runs", 0) + 1
+    stats["collected"] = stats.get("collected", 0) + len(fresh)
+    stats["passed"] = stats.get("passed", 0) + passed
+    stats["sent"] = stats.get("sent", 0) + len(sent)
+    ai_dropped = [d[2] for d in decisions.values() if d[1] == ts and d[0] == "gemini_irrelevant"]
+    stats["ai_dropped"] = stats.get("ai_dropped", 0) + len(ai_dropped)
+    stats["ai_examples"] = (stats.get("ai_examples", []) + ai_dropped)[-15:]
+    feeds = dict(stats.get("feeds", {}))
+    for n in range(len(config["feeds"])):
+        feeds[str(n)] = feeds.get(str(n), 0) + counts.get(str(n), 0)
+    stats["feeds"] = feeds
+    report_week = (state or {}).get("report_week")
+    local = now.astimezone(KST)
+    week = f"{local:%G-W%V}"
+    if local.weekday() == 0 and local.hour >= 9 and report_week != week and not first_run:
+        if alert:
+            alert(weekly_report(config, stats, now))
+        stats, report_week = {"since": ts}, week
+    save_state(state_path, seen, now, recent, failures, instant_checked=(state or {}).get("instant_checked"),
+               decisions=decisions, stats=stats, report_week=report_week)
     return sent
+
+
+REASONS = {
+    "sent": "✅ 발송했어요.",
+    "cap": "칸별 발송 상한을 넘었거나, 비슷한 제목의 기사가 먼저 나가서 뺐어요.",
+    "score": "키워드 점수가 낮아서 뺐어요 (보안 단어가 없거나 약해요).",
+    "nosec": "보안 글만 받는 출처인데 보안 키워드가 없어서 뺐어요.",
+    "focus_only": "군 기사만 받는 출처인데 군 기사가 아니라서 뺐어요.",
+    "focus_nosec": "군 기사지만 보안 내용이 없어서 뺐어요.",
+    "told": "이미 보낸 사건과 같은 기사라서 뺐어요.",
+    "kev": "같은 취약점을 다룬 뉴스 기사가 있어서 KEV 항목을 뺐어요.",
+    "gemini_irrelevant": "AI(Gemini)가 보안과 무관하다고 판단해서 뺐어요.",
+    "gemini_dup": "AI(Gemini)가 다른 기사나 이미 보낸 사건과 같은 내용으로 판단해서 뺐어요.",
+    "gemini_focus_only": "군 기사만 받는 출처인데 AI(Gemini)가 군 기사가 아니라고 판단했어요.",
+    "rw_filtered": "감시 대상(한국·주요 업종·군 관련)이 아닌 랜섬웨어 피해라서 뺐어요.",
+    "old": "48시간보다 오래된 기사라서 뺐어요.",
+    "first_run": "봇을 처음 켤 때 이미 있던 기사라서 기록만 했어요.",
+}
+
+
+def explain(state, query):
+    """Answer for the admin's /why: what happened to an article, found by link or title words."""
+    query = query.strip()
+    if not query:
+        return "사용법: /why 기사링크  또는  /why 제목 일부"
+    decisions = (state or {}).get("decisions", {})
+
+    def norm(url):
+        return re.sub(r"^https?://(www\.)?", "", url.split("#")[0].split("?")[0]).rstrip("/").lower()
+
+    if re.match(r"https?://", query):
+        hits = [(k, d) for k, d in decisions.items() if norm(k) == norm(query)]
+    else:
+        hits = [(k, d) for k, d in decisions.items() if query.lower() in d[2].lower()][-3:]
+    if not hits:
+        return ("🔍 최근 3일 안에 우리 출처에서 수집한 기록이 없어요.\n"
+                "출처에 없는 매체이거나, 3일보다 오래된 기사일 수 있어요. 구글뉴스 기사는 링크가 달라서 "
+                "제목 일부로 다시 물어보세요: /why 제목일부")
+    lines = ["🔍 <b>기사 처리 결과</b>"]
+    for _, (reason, when, title) in hits:
+        lines.append(f"\n· {html.escape(title)}\n  {datetime.fromtimestamp(when, KST):%m/%d %H:%M} 수집 · "
+                     + REASONS.get(reason, reason))
+    return "\n".join(lines)
+
+
+def weekly_report(config, stats, now):
+    since = datetime.fromtimestamp(stats.get("since", now.timestamp()), KST)
+    quiet_feeds = [f["name"] for n, f in enumerate(config["feeds"]) if not stats.get("feeds", {}).get(str(n))]
+    lines = [f"📊 <b>주간 리포트</b> ({since:%m/%d} ~ {now.astimezone(KST):%m/%d})",
+             f"· 정기 발송 {stats.get('runs', 0)}회, 새 기사 {stats.get('collected', 0)}건 수집",
+             f"· 키워드 통과 {stats.get('passed', 0)}건 → AI 제외 {stats.get('ai_dropped', 0)}건 → "
+             f"발송 {stats.get('sent', 0)}건",
+             "· 기간 내내 0건인 출처: " + (", ".join(html.escape(n) for n in quiet_feeds) or "없음")]
+    if stats.get("ai_examples"):
+        lines.append("· AI가 무관하다고 뺀 기사 (놓친 게 있으면 키워드·기준을 고쳐요):")
+        lines += [f"  - {html.escape(t)}" for t in stats["ai_examples"][-10:]]
+    return "\n".join(lines)
 
 
 
@@ -1642,7 +1776,7 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         tagger.tag(item)
         candidates.append((key, tkey, item))
 
-    sent = []
+    sent, extra = [], {}
     if first:
         log("instant alerts: first check; current items recorded, nothing sent")
     elif candidates:
@@ -1666,10 +1800,14 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
                 if it in urgent:
                     seen[key] = seen[tkey] = ts
             recent += [[it["title"], sorted(item_cves(it)), ts, it.get("story", "")] for it in urgent]
+            decisions = dict(state.get("decisions", {}))
+            for it in urgent:
+                decisions[it.get("link") or title_key(it)] = ["sent", ts, it["title"][:120]]
+            extra["decisions"] = decisions
         log(f"instant alerts: {len(candidates)} candidate(s), sent {len(sent)}" + (" quietly" if sent and quiet(config, now) else ""))
     checked = {k: t for k, t in checked.items() if ts - t <= 2 * 86400}
     save_state(state_path, seen, now, recent, state.get("feed_failures", {}),
-               last_digest=state.get("last_digest"), instant_checked=checked)
+               last_digest=state.get("last_digest"), instant_checked=checked, **extra)
     return sent
 
 
@@ -1776,6 +1914,7 @@ def main(argv=None):
                                           send=lambda cid, text, markup=None: telegram_send(token, cid, text,
                                                                                              markup=markup),
                                           key=key, admin=approver, welcome=wording(config, "welcome"),
+                                          why=lambda q: explain(load_state(state_path), q),
                                           api=lambda method, params: telegram_api(token, method, params))
         if added or removed:
             log(f"subscribers: +{len(added)} -{len(removed)}")
