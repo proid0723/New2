@@ -974,9 +974,9 @@ def parse_chat_ids(value):
 
 GOODBYE = "구독을 해지했어요. 다시 받으려면 /start 를 보내 주세요."
 REQUESTED = ("구독 신청이 접수됐어요. 관리자가 승인하면 \"구독이 시작됐어요\" 메시지와 함께 뉴스를 보내 드려요.\n"
-             "⏳ /start는 한 번만 누르면 돼요. 승인까지 시간이 조금 걸릴 수 있어요.")
+             "⏳ 관리자 승인 후 10~15분 정도 소요됩니다. /start는 한 번만 누르면 돼요.")
 # Shown under the admin's buttons; dropped again when the result replaces the buttons.
-APPROVE_HINT = "⏳ 버튼은 한 번만 누르세요. 5~10분 안에 처리되고 이 메시지가 \"승인 완료\"로 바뀌어요."
+APPROVE_HINT = "⏳ 버튼은 한 번만 누르세요. 10~15분 안에 처리되고 이 메시지가 \"승인 완료\"로 바뀌어요."
 REJECTED = "구독 신청이 승인되지 않았어요."
 # Telegram errors that mean the chat will never accept messages again.
 GONE = re.compile(r"blocked by the user|user is deactivated|chat not found|kicked", re.I)
