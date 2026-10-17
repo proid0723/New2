@@ -1099,7 +1099,8 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
     Without an admin, /start (or the bot being added to a group) subscribes at once, even after an
     earlier /stop, and any other message subscribes chats that never stopped. With an admin, /start
     from a new chat becomes a request: the admin gets ✅/❌ buttons and the answer is applied on a
-    later run (former subscribers and the admin themself need no approval). Updates already handled
+    later run (former subscribers and the admin themself need no approval; a rejected chat that
+    sends /start again becomes a new request). Updates already handled
     are skipped (Telegram keeps about a day of them).
 
     send(chat_id, text, markup=None) sends a message; api(method, params) answers button presses.
@@ -1182,7 +1183,8 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
             ids[cid] = None
             former[cid] = None
             added.append(cid)
-        elif action == "start" and cid not in denied and cid not in pending:
+        elif action == "start" and cid not in pending:
+            # A rejected chat may ask again with /start; it always goes back to the admin.
             pending[cid] = _chat_name(chat)
             requests.append(cid)
     save_subscribers(path, {"ids": list(ids), "stopped": list(stopped), "last_update": last_seen,

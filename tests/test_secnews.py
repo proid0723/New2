@@ -762,13 +762,26 @@ class SubscriberTests(unittest.TestCase):
         self.assertEqual(self.api_calls.count("editMessageText"), 1)
         self.assertEqual(self.sent, [])
 
-    def test_rejected_chat_is_not_asked_about_again(self):
+    def test_rejected_chat_can_ask_again(self):
         self.approval_sync([upd(1, 11, "/start"), self.press(2, "no:11")])
         self.assertEqual(self.ids(), [])
         self.assertIn(("11", secnews.REJECTED, None), self.sent)
         self.sent.clear()
         self.approval_sync([upd(3, 11, "/start")])
-        self.assertEqual(self.sent, [])
+        self.assertEqual(self.ids(), [])  # still needs the admin
+        self.assertIn(("11", secnews.REQUESTED, None), self.sent)
+        self.approval_sync([self.press(4, "ok:11")])
+        self.assertEqual(self.ids(), ["11"])
+
+    def test_rejected_former_subscriber_needs_approval_again(self):
+        secnews.add_subscribers(self.path, ["11"], self.key)
+        self.approval_sync([upd(1, 11, "/stop"), upd(2, 11, "/start")])  # former: back without asking
+        self.approval_sync([upd(3, 11, "/stop")])
+        subs = secnews.load_subscribers(self.path, self.key)
+        subs["denied"] = ["11"]
+        secnews.save_subscribers(self.path, subs, self.key)
+        self.approval_sync([upd(4, 11, "/start")])
+        self.assertEqual(self.ids(), [])
 
     def test_only_the_admin_can_approve_and_chatter_is_ignored(self):
         self.approval_sync([upd(1, 11, "/start"), self.press(2, "ok:11", who=11), upd(3, 22, "hello")])
