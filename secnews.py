@@ -530,16 +530,6 @@ def short_summary(item, limit=140):
     return text
 
 
-def translated_page_url(link, target="ko"):
-    """Google Translate's proxy URL, which opens the article already translated."""
-    u = urllib.parse.urlsplit(link)
-    if u.scheme not in ("http", "https") or not u.hostname or u.hostname.endswith("t.me"):
-        return ""
-    host = u.hostname.replace("-", "--").replace(".", "-") + ".translate.goog"
-    query = urllib.parse.parse_qsl(u.query) + [("_x_tr_sl", "auto"), ("_x_tr_tl", target), ("_x_tr_hl", target)]
-    return urllib.parse.urlunsplit(("https", host, u.path or "/", urllib.parse.urlencode(query), ""))
-
-
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
     title = html.escape(item.get("display_title", item["title"]))
@@ -554,8 +544,8 @@ def format_item(item, hide_sector=None, key="sectors"):
     source = html.escape(item["source"])  # the title already links to the article
     meta = f"📰 출처: {source}" + (f" · {when}" if when else "")
     if item.get("translated"):
-        ko_page = translated_page_url(item["link"]) if item["link"] else ""
-        meta += f' · <a href="{html.escape(ko_page, quote=True)}">🇰🇷 번역본 보기</a>' if ko_page else " · 🌐 영문 번역"
+        # No link to Google's translated copy: its proxy (translate.goog) is blocked in Korea.
+        meta += " · 🌐 영문 기사 (제목·요약 번역)"
     lines.append(meta)
     return "\n".join(lines)
 

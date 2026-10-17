@@ -764,8 +764,8 @@ class LocalizeTests(unittest.TestCase):
         self.assertTrue(it["display_summary"].startswith("번역:"))
         text = secnews.format_item(it)
         self.assertIn('href="https://e.com/x"', text)
-        self.assertIn("🇰🇷 번역본 보기", text)
-        self.assertIn("https://e-com.translate.goog/x?_x_tr_sl=auto&amp;_x_tr_tl=ko", text)
+        self.assertIn("🌐 영문 기사", text)
+        self.assertNotIn("translate.goog", text)  # Google's proxy is blocked in Korea
         self.assertIn("📰 출처: S", text)
 
     def test_summary_translated_even_when_title_is_an_id(self):
@@ -1102,11 +1102,6 @@ class ScheduleTests(unittest.TestCase):
 
 
 class MessageTests(unittest.TestCase):
-    def test_translated_page_url(self):
-        self.assertEqual(secnews.translated_page_url("https://www.dark-reading.com/a/b?id=1"),
-                         "https://www-dark--reading-com.translate.goog/a/b?id=1&_x_tr_sl=auto&_x_tr_tl=ko&_x_tr_hl=ko")
-        self.assertEqual(secnews.translated_page_url("https://t.me/chan/1"), "")
-
     def test_sections(self):
         base = {"link": "https://e.com", "source": "s", "date": NOW, "summary": ""}
         items = [dict(base, title="C", score=1), dict(base, title="A", score=5)]
