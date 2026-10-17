@@ -1068,6 +1068,38 @@ def subscriber_key(token):
     return hmac.new(token.encode(), b"secnews-subscribers", hashlib.sha256).digest() if token else None
 
 
+try:  # AES-256-GCM for the subscriber file; the workflow installs it from requirements.txt
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+except ImportError:
+    AESGCM = None
+SUBSCRIBERS_AAD = b"secnews-subscribers"
+
+
+def _aes_key(key):
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                info=b"secnews-subscribers aes-256-gcm").derive(key)
+
+
+def _decrypt_subscribers(data, key):
+    """Plaintext of an encrypted subscriber file, or None when this key cannot open it. Version 2
+    is AES-256-GCM; the older format (an HMAC keystream) is still read so it can be converted."""
+    if data.get("v") == 2:
+        if AESGCM is None:
+            raise RuntimeError("the subscriber file is AES-encrypted: install requirements.txt")
+        try:
+            return AESGCM(_aes_key(key)).decrypt(base64.b64decode(data["nonce"]), base64.b64decode(data["ct"]),
+                                                 SUBSCRIBERS_AAD)
+        except InvalidTag:
+            return None
+    nonce, ct = base64.b64decode(data["nonce"]), base64.b64decode(data["ct"])
+    if not hmac.compare_digest(base64.b64decode(data["mac"]), hmac.new(key, nonce + ct, hashlib.sha256).digest()):
+        return None
+    return bytes(a ^ b for a, b in zip(ct, _keystream(key, nonce, len(ct))))
+
+
 def _keystream(key, nonce, length):
     blocks = (hmac.new(key, nonce + i.to_bytes(4, "big"), hashlib.sha256).digest()
               for i in range((length + 31) // 32))
@@ -1090,11 +1122,11 @@ def load_subscribers(path, key=None):
         if not key:
             log("warning: subscriber file is encrypted and no bot token is set")
             return empty
-        nonce, ct = base64.b64decode(data["nonce"]), base64.b64decode(data["ct"])
-        if not hmac.compare_digest(base64.b64decode(data["mac"]), hmac.new(key, nonce + ct, hashlib.sha256).digest()):
+        plain = _decrypt_subscribers(data, key)
+        if plain is None:
             log("warning: subscriber file does not match this bot token; starting a new list")
             return empty
-        data = json.loads(bytes(a ^ b for a, b in zip(ct, _keystream(key, nonce, len(ct)))))
+        data = json.loads(plain)
     ids, stopped = list(data.get("ids", [])), list(data.get("stopped", []))
     return {"ids": ids, "stopped": stopped, "last_update": data.get("last_update", 0),
             # Approval mode: requests waiting for the admin (id -> name, kept only in this encrypted
@@ -1107,7 +1139,12 @@ def load_subscribers(path, key=None):
 def save_subscribers(path, subs, key=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = json.dumps(subs).encode()
-    if key:
+    if key and AESGCM is not None:
+        nonce = os.urandom(12)
+        ct = AESGCM(_aes_key(key)).encrypt(nonce, raw, SUBSCRIBERS_AAD)
+        raw = json.dumps({"v": 2, "nonce": base64.b64encode(nonce).decode(),
+                          "ct": base64.b64encode(ct).decode()}).encode()
+    elif key:  # without the cryptography package (local runs): the older format
         nonce = os.urandom(16)
         ct = bytes(a ^ b for a, b in zip(raw, _keystream(key, nonce, len(raw))))
         mac = hmac.new(key, nonce + ct, hashlib.sha256).digest()
@@ -1124,9 +1161,7 @@ def _readable_with(path, key):
         return False
     if "ct" not in data:
         return not key
-    nonce, ct = base64.b64decode(data["nonce"]), base64.b64decode(data["ct"])
-    return bool(key) and hmac.compare_digest(base64.b64decode(data["mac"]),
-                                             hmac.new(key, nonce + ct, hashlib.sha256).digest())
+    return bool(key) and _decrypt_subscribers(data, key) is not None
 
 
 def backup_subscribers(path, backup, key=None):
@@ -1138,9 +1173,11 @@ def backup_subscribers(path, backup, key=None):
     current = load_subscribers(path, key)
     if _readable_with(backup, key):
         old = load_subscribers(backup, key)
-        if all((sorted(current[f]) if isinstance(current[f], list) else current[f])
-               == (sorted(old[f]) if isinstance(old[f], list) else old[f])
-               for f in ("ids", "stopped", "pending", "denied", "former")):
+        same_format = (json.loads(backup.read_text(encoding="utf-8")).get("v")
+                       == json.loads(path.read_text(encoding="utf-8")).get("v"))
+        if same_format and all((sorted(current[f]) if isinstance(current[f], list) else current[f])
+                               == (sorted(old[f]) if isinstance(old[f], list) else old[f])
+                               for f in ("ids", "stopped", "pending", "denied", "former")):
             return False
         if old["ids"] and not current["ids"]:
             log("warning: subscriber list is empty but the backup is not; keeping the backup")

@@ -1,3 +1,4 @@
+import base64
 import json
 import sys
 import tempfile
@@ -836,6 +837,30 @@ class SubscriberTests(unittest.TestCase):
         self.assertIn(("11", secnews.TEXTS["welcome"], None), self.sent)
         self.assertIn("answerCallbackQuery", self.api_calls)
         self.assertIn("editMessageText", self.api_calls)
+
+    @unittest.skipIf(secnews.AESGCM is None, "cryptography is not installed")
+    def test_subscriber_file_is_aes_gcm_and_old_files_are_converted(self):
+        saved = secnews.AESGCM
+        secnews.AESGCM = None  # write the older format first
+        try:
+            secnews.add_subscribers(self.path, ["11"], self.key)
+        finally:
+            secnews.AESGCM = saved
+        self.assertNotIn('"v"', self.path.read_text())
+        backup = Path(self.dir.name) / "backup.json"
+        secnews.backup_subscribers(self.path, backup, self.key)
+        self.sync([{"update_id": 1, "message": {}}])  # any run saves the file again
+        data = json.loads(self.path.read_text())
+        self.assertEqual((data["v"], len(base64.b64decode(data["nonce"]))), (2, 12))
+        self.assertNotIn("11", self.path.read_text())
+        self.assertEqual(self.ids(), ["11"])
+        self.assertTrue(secnews.backup_subscribers(self.path, backup, self.key))  # backup converted too
+        self.assertEqual(json.loads(backup.read_text())["v"], 2)
+        other = secnews.subscriber_key("999:other")
+        self.assertEqual(secnews.load_subscribers(self.path, other)["ids"], [])  # wrong token opens nothing
+        data["ct"] = base64.b64encode(b"x" + base64.b64decode(data["ct"])[1:]).decode()
+        self.path.write_text(json.dumps(data))
+        self.assertEqual(self.ids(), [])  # a changed byte fails the GCM tag
 
     def test_backup_follows_membership_changes_only(self):
         backup = Path(self.dir.name) / "backup" / "subscribers.json"

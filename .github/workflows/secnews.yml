@@ -46,6 +46,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      # The only package: cryptography, for the subscriber file's AES-256-GCM. Exact files only.
+      - name: Install cryptography
+        run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       - name: Unit tests
         run: python3 -m unittest discover -s tests -v
 
@@ -82,6 +85,9 @@ jobs:
           path: .state
           key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: secnews-state-
+      # The only package: cryptography, for the subscriber file's AES-256-GCM. Exact files only.
+      - name: Install cryptography
+        run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       # The subscriber list is also backed up (still encrypted) in the private repository, so a
       # cache that was evicted or deleted does not lose everyone who subscribed.
       - name: Restore subscribers from the backup
@@ -198,6 +204,8 @@ jobs:
           path: .state
           key: secnews-state-${{ github.run_id }}
           restore-keys: secnews-state-
+      - name: Install cryptography
+        run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       - name: Who messaged the bot
         env:
           # The chat-id secret is left out on purpose: GitHub would mask those ids in this log.
