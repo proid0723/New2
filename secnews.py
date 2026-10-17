@@ -248,11 +248,15 @@ def parse_telegram(raw, source):
     return items
 
 
-def parse_ransomware(raw, source):
-    """ransomware.live victim list. Field names differ between its endpoints, so accept both."""
+HANGUL = re.compile(r"[\uac00-\ud7a3]")
+
+
+def parse_ransomware(raw, source, site="https://www.ransomware.live"):
+    """Leak-site victim lists from ransomware.live or RansomLook. Field names differ between their
+    endpoints, so accept both. The same victim from both sites gets the same id and is sent once."""
     data = json.loads(raw)
     if isinstance(data, dict):
-        data = data.get("victims") or data.get("data") or []
+        data = data.get("victims") or data.get("data") or data.get("posts") or []
     items = []
     for v in data:
         name = (v.get("victim") or v.get("post_title") or "").strip()
@@ -260,6 +264,8 @@ def parse_ransomware(raw, source):
         if not name or not group:
             continue
         country = (v.get("country") or "").strip().upper()
+        if not country and (HANGUL.search(name) or re.search(r"\.kr\b", name.lower())):
+            country = "KR"  # RansomLook has no country field
         sector = (v.get("activity") or v.get("sector") or "").strip()
         if sector.lower() in ("not found", "unknown"):
             sector = ""
@@ -272,7 +278,7 @@ def parse_ransomware(raw, source):
         items.append({
             "source": source,
             "title": f"{'🇰🇷 ' if country == 'KR' else ''}{name} — {group} 랜섬웨어 피해 공개",
-            "link": f"https://www.ransomware.live/group/{urllib.parse.quote(group.lower())}",
+            "link": f"{site}/group/{urllib.parse.quote(group.lower())}",
             "id": f"rw:{group.lower()}:{name.lower()}",
             "date": date,
             "summary": " · ".join(details),
@@ -295,7 +301,8 @@ def parse_google_news(raw, source):
     return items
 
 
-PARSERS = {"telegram": parse_telegram, "ransomware": parse_ransomware, "google_news": parse_google_news}
+PARSERS = {"telegram": parse_telegram, "ransomware": parse_ransomware, "google_news": parse_google_news,
+           "ransomlook": lambda raw, source: parse_ransomware(raw, source, site="https://www.ransomlook.io")}
 
 
 # ------------------------------------------------------------------ scoring

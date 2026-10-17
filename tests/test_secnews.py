@@ -143,6 +143,20 @@ class SourceParserTests(unittest.TestCase):
         scorer.classify(it)
         self.assertTrue(it["focus"])
 
+    def test_ransomlook_posts_and_the_same_victim_from_both_sites(self):
+        raw = json.dumps([
+            {"post_title": "hanbit-tech.co.kr", "group_name": "Qilin", "discovered": "2026-10-15 01:00:00.123456"},
+            {"post_title": "(주)한국정밀", "group_name": "akira", "discovered": "2026-10-15 02:00:00"},
+            {"post_title": "bakery.fr", "group_name": "play", "discovered": "2026-10-15 01:00:00"},
+        ]).encode()
+        items = secnews.PARSERS["ransomlook"](raw, "ransomlook")
+        self.assertEqual([i["country"] for i in items], ["KR", "KR", ""])
+        self.assertTrue(items[0]["title"].startswith("🇰🇷 hanbit-tech.co.kr"))
+        self.assertTrue(items[0]["link"].startswith("https://www.ransomlook.io/group/qilin"))
+        live = secnews.parse_ransomware(json.dumps([{"victim": "hanbit-tech.co.kr", "group": "qilin",
+                                                    "country": "KR"}]).encode(), "rw")
+        self.assertEqual(live[0]["id"], items[0]["id"])  # collected once
+
     def test_ransomware_both_shapes(self):
         items = secnews.parse_ransomware(RW_RECENT, "rw")
         self.assertEqual(len(items), 3)
