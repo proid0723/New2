@@ -1,0 +1,149 @@
+name: secnews
+
+# Runs on GitHub-hosted runners (free for public repositories). Never point a public
+# repository's workflows at a self-hosted runner: a pull request from a fork could run
+# code on that machine.
+on:
+  schedule:
+    # Every 5 minutes: new /start subscribers are picked up and welcomed. News goes out on the
+    # first run of each clock hour (digest_on_the_hour in feeds.json). GitHub may start late.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: 'Forget what was already sent and send the current news again'
+        type: boolean
+        default: false
+      test_me:
+        description: 'Test: send the current news only to the TELEGRAM_TEST_CHAT_ID secret (subscribers get nothing, nothing is saved). Untick to send to everyone.'
+        type: boolean
+        default: true
+      list_chats:
+        description: 'Only list who messaged the bot recently (no news is sent)'
+        type: boolean
+        default: false
+      scheduled:
+        description: 'Behave like the timer (used by the external cron-job.org ping, which is more punctual than GitHub schedules)'
+        type: boolean
+        default: false
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name != 'schedule' && !inputs.scheduled
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+
+  send:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.list_chats)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Never run two senders at once, or both could send the same items.
+    concurrency:
+      group: secnews-send
+      cancel-in-progress: false
+    env:
+      SECNEWS_STATE: ${{ github.workspace }}/.state/seen.json
+      # Keywords and sources live in a private repository once CONFIG_REPO_TOKEN is set
+      # (read-only access to <owner>/New2_config). The public repository has no feeds.json.
+      HAS_PRIVATE_CONFIG: ${{ secrets.CONFIG_REPO_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch private settings
+        if: env.HAS_PRIVATE_CONFIG == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/New2_config
+          token: ${{ secrets.CONFIG_REPO_TOKEN }}
+          path: .private-config
+          persist-credentials: false
+      # What was already sent lives in the Actions cache between runs. Each run saves a new
+      # entry; restore-keys picks the newest one.
+      - name: Restore sent-item state
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: secnews-state-
+      - name: Collect and send
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Manual runs are tests unless test_me is unticked; the external timer's runs never are.
+          TEST_ME: ${{ inputs.test_me && !inputs.scheduled }}
+          TEST_CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
+          # The owner (the test chat) hears about feeds that keep failing.
+          SECNEWS_ADMIN_CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
+          RESET_FLAG: ${{ inputs.reset && '--reset' || '' }}
+          TIMER_RUN: ${{ github.event_name == 'schedule' || inputs.scheduled }}
+        # Timer runs (GitHub schedule or the external ping) wait for the hourly digest, and a run
+        # with no saved state only records the current news. Manual runs send now.
+        run: |
+          if [ -f .private-config/feeds.json ]; then
+            export SECNEWS_CONFIG="$PWD/.private-config/feeds.json"
+            echo "settings: private repository"
+          elif [ ! -f feeds.json ]; then
+            echo "::error::No settings: feeds.json is not in New2_config (or CONFIG_REPO_TOKEN is missing or expired)."
+            exit 1
+          fi
+          if [ "$TEST_ME" = "true" ]; then
+            if [ -z "$(echo "$TEST_CHAT" | tr -d '[:space:]')" ]; then
+              echo "::error::The TELEGRAM_TEST_CHAT_ID secret is empty or missing (Settings > Secrets and variables > Actions > Secrets). A test never goes to subscribers."
+              exit 1
+            fi
+            SECNEWS_ONLY_CHATS="$TEST_CHAT" python3 secnews.py
+          elif [ "$TIMER_RUN" = "true" ]; then
+            python3 secnews.py --quiet-first-run
+          else
+            python3 secnews.py --now $RESET_FLAG
+          fi
+      - name: Tell the owner the run failed
+        if: failure() && (github.event_name == 'schedule' || inputs.scheduled)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # Timer runs come every 5 minutes; only the first of each hour reports, so a lasting
+        # outage means one message an hour, not twelve.
+        run: |
+          [ -n "$CHAT" ] && [ -n "$TELEGRAM_BOT_TOKEN" ] || exit 0
+          [ "$(date -u +%-M)" -lt 5 ] || exit 0
+          curl -s -o /dev/null --data-urlencode "chat_id=$CHAT" \
+            --data-urlencode "text=⚠️ 보안 속보 봇 실행이 실패했어요. 로그: $RUN_URL" \
+            "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" || true
+      - name: Save sent-item state
+        if: success() && !(inputs.test_me && !inputs.scheduled)
+        uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+  chats:
+    if: github.event_name == 'workflow_dispatch' && inputs.list_chats
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SECNEWS_STATE: ${{ github.workspace }}/.state/seen.json
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore subscriber list
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: secnews-state-${{ github.run_id }}
+          restore-keys: secnews-state-
+      - name: Who messaged the bot
+        env:
+          # The chat-id secret is left out on purpose: GitHub would mask those ids in this log.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python3 tools/get_chat_ids.py

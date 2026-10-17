@@ -1,0 +1,199 @@
+{
+  "max_age_hours": 48,
+  "digest_on_the_hour": true,
+  "require_approval": true,
+  "quiet_hours": [
+    22,
+    6
+  ],
+  "morning_cap_factor": 1.5,
+  "instant_alerts": true,
+  "max_instant_per_run": 5,
+  "min_score": 1,
+  "max_items_per_run": 20,
+  "max_focus_per_run": 20,
+  "max_ransomware_per_run": 10,
+  "max_per_source": 4,
+  "ransomware_countries": [
+    "KR"
+  ],
+  "ransomware_sectors": [
+    "government",
+    "aviation",
+    "public sector",
+    "telecommunication",
+    "energy"
+  ],
+  "translate_to_korean": true,
+  "keywords": {
+    "critical": [
+      "zero-day",
+      "actively exploited",
+      "rce",
+      "제로데이",
+      "unauthenticated",
+      "긴급 패치"
+    ],
+    "high": [
+      "cve-",
+      "vulnerability",
+      "vulnerabilities",
+      "ransomware",
+      "breach",
+      "malware",
+      "backdoor",
+      "apt",
+      "patch",
+      "exploit",
+      "취약점",
+      "랜섬웨어",
+      "유출",
+      "해킹",
+      "악성코드",
+      "피싱",
+      "패치",
+      "cybersecurity",
+      "hackers",
+      "사이버",
+      "해커",
+      "data breach",
+      "lockbit",
+      "akira",
+      "qilin",
+      "kev",
+      "정보유출",
+      "개인정보",
+      "공급망",
+      "breached",
+      "leaks",
+      "정보 수집",
+      "정보 유출",
+      "기밀 유출",
+      "tracking",
+      "camera"
+    ],
+    "weak": [
+      "공급망"
+    ],
+    "instant": [
+      "zero-day",
+      "actively exploited",
+      "제로데이",
+      "실제 악용",
+      "긴급 패치"
+    ],
+    "focus_security": [
+      "보안 강화",
+      "기밀",
+      "security",
+      "classified"
+    ],
+    "focus": [
+      "airline",
+      "airlines",
+      "airport",
+      "aviation",
+      "항공",
+      "항공사",
+      "공항",
+      "항공기",
+      "airline suppliers",
+      "관제"
+    ]
+  },
+  "sectors": {
+    "금융": [
+      "금융",
+      "銀",
+      "bank",
+      "banks",
+      "financial"
+    ],
+    "가상자산": [],
+    "공공": [
+      "agency"
+    ],
+    "의료": [
+      "의료",
+      "hospital",
+      "hospitals"
+    ],
+    "통신": [
+      "SKT",
+      "유심"
+    ],
+    "에너지": [],
+    "제조": [],
+    "유통": [
+      "retailer"
+    ],
+    "교육": [],
+    "물류": [],
+    "건설": [],
+    "IT": [
+      "클라우드",
+      "구글",
+      "open source",
+      "microsoft",
+      "google",
+      "linux",
+      "chrome",
+      "github"
+    ],
+    "AI": [
+      "AI",
+      "gemini"
+    ],
+    "IoT": [
+      "IoT",
+      "router",
+      "ip camera",
+      "camera",
+      "firmware"
+    ]
+  },
+  "focus_sectors": {
+    "항공사": [
+      "항공사",
+      "airline",
+      "airlines"
+    ],
+    "공항": [
+      "공항",
+      "airport"
+    ],
+    "항공 정책·행사": [
+      "국토부",
+      "항공 안전"
+    ]
+  },
+  "fallback_sectors": {
+    "SW·취약점": [
+      "취약점",
+      "긴급 패치",
+      "패치",
+      "제로데이",
+      "cve-",
+      "vulnerability",
+      "vulnerabilities",
+      "flaw",
+      "bug",
+      "patch",
+      "patches",
+      "patched",
+      "rce",
+      "auth bypass",
+      "exploit",
+      "zero-day",
+      "nginx",
+      "kernel"
+    ]
+  },
+  "feeds": [
+    {
+      "name": "Example feed",
+      "url": "https://example.com/feed.xml"
+    }
+  ],
+  "_comment": "Test fixture. The real settings (sources, keywords) live in the private New2_config repository."
+}
