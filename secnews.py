@@ -1647,6 +1647,13 @@ def main(argv=None):
     # With an admin (the test chat) and require_approval on, new /start requests wait for the admin.
     approver = os.environ.get("SECNEWS_ADMIN_CHAT", "").strip() if config.get("require_approval", True) else ""
     try:
+        info = telegram_api(token, "getWebhookInfo", {}).get("result", {})
+        log(f"telegram: webhook {'SET' if info.get('url') else 'none'}, "
+            f"pending {info.get('pending_update_count')}, allowed {info.get('allowed_updates')}, "
+            f"offset after {load_subscribers(subs_path, key).get('last_update', 0) % 1000}")
+    except (TelegramError, OSError, ValueError) as e:
+        log(f"warning: getWebhookInfo failed: {e}")
+    try:
         added, removed = sync_subscribers(subs_path, telegram_get_updates(
                                               token, load_subscribers(subs_path, key).get("last_update", 0)),
                                           send=lambda cid, text, markup=None: telegram_send(token, cid, text,
