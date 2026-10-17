@@ -1089,6 +1089,10 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
     pending, denied, former = dict(subs["pending"]), dict.fromkeys(subs["denied"]), dict.fromkeys(subs["former"])
     last_seen = subs.get("last_update", 0)
     added, removed, requests, rejected, presses, tests = [], [], [], [], [], []
+    if updates:
+        kinds = [k for u in updates for k in ("message", "callback_query", "my_chat_member") if k in u]
+        log(f"telegram updates: {len(updates)} ({', '.join(sorted(set(kinds)))}), "
+            f"{sum(1 for u in updates if u.get('update_id', 0) > last_seen)} new")
     for upd in sorted(updates, key=lambda u: u.get("update_id", 0)):
         if upd.get("update_id", 0) <= last_seen:
             continue
