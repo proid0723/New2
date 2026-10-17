@@ -1057,6 +1057,28 @@ class SubscriberTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class QuietLogTests(unittest.TestCase):
+    def test_public_log_shows_summary_and_holds_the_rest(self):
+        import contextlib
+        import io
+        saved = secnews.QUIET, list(secnews.HELD)
+        secnews.QUIET, secnews.HELD[:] = True, []
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(out):
+                secnews.log("source 3: 50 items")
+                secnews.log("5 recipient(s)")
+                secnews.log("warning: source 7 failed: timeout")
+                secnews.log("sent 2 of 31 new items")
+            self.assertEqual(out.getvalue().splitlines(),
+                             ["5 recipient(s)", "warning: source 7 failed: timeout", "sent 2 of 31 new items"])
+            with contextlib.redirect_stderr(out):
+                secnews.show_held_log()  # a failed run prints everything
+            self.assertIn("source 3: 50 items", out.getvalue())
+        finally:
+            secnews.QUIET, secnews.HELD[:] = saved
+
+
 class WatchdogTests(unittest.TestCase):
     def test_minutes_since_last_run(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))

@@ -45,8 +45,25 @@ TELEGRAM_LIMIT = 4096
 TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 
 
+# Actions logs of a public repository are public. There a run prints only warnings, errors and a
+# short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
+QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
+SUMMARY = re.compile(r"^(warning|error|sent \d|subscribers:|instant alerts:|night notice|\d+ recipient)")
+HELD = []
+
+
 def log(msg):
+    if QUIET and not SUMMARY.match(str(msg)):
+        HELD.append(msg)
+        return
     print(msg, file=sys.stderr, flush=True)
+
+
+def show_held_log():
+    print("--- full log ---", file=sys.stderr)
+    for msg in HELD:
+        print(msg, file=sys.stderr)
+    HELD.clear()
 
 
 # ---------------------------------------------------------------- fetching
@@ -1970,4 +1987,11 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+    except BaseException:
+        show_held_log()
+        raise
+    if code:
+        show_held_log()
+    sys.exit(code)

@@ -28,6 +28,10 @@ on:
         description: 'Behave like the timer (used by the external cron-job.org ping, which is more punctual than GitHub schedules)'
         type: boolean
         default: false
+      verbose:
+        description: 'Print the full log (normally only a summary; the full log is printed when a run fails)'
+        type: boolean
+        default: false
   push:
     branches: ['**']
   pull_request:
@@ -97,6 +101,7 @@ jobs:
           # The owner (the test chat) hears about feeds that keep failing.
           SECNEWS_ADMIN_CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
           RESET_FLAG: ${{ inputs.reset && '--reset' || '' }}
+          SECNEWS_VERBOSE: ${{ inputs.verbose && '1' || '' }}
           TIMER_RUN: ${{ github.event_name == 'schedule' || inputs.scheduled }}
         # Timer runs (GitHub schedule or the external ping) wait for the hourly digest, and a run
         # with no saved state only records the current news. Manual runs send now.

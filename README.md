@@ -68,6 +68,7 @@ cron-job.org: 5분마다 `POST https://api.github.com/repos/<owner>/<repo>/actio
 - Actions → secnews → **Run workflow**: `test_me`가 기본으로 켜져 있어 **관리자에게만** 현재 뉴스를 보냅니다. 보낸 기록·구독자 목록은 바꾸지 않습니다.
 - `test_me`를 끄면 모든 구독자에게 바로 보냅니다(`reset`을 켜면 보낸 기록을 지우고 다시 보냄).
 - `list_chats`: 아직 처리되지 않은 봇 메시지 목록 (이름·ID 가림).
+- 공개 로그에는 평소 구독자 수·발송 건수·경고만 찍히고, 실행이 실패하면 전체 로그가 찍힙니다. 전체 로그를 보려면 `verbose`를 켜고 실행하세요.
 - push와 PR에는 단위 테스트만 돌고 메시지는 보내지 않습니다.
 
 ## 고장 알림 (관리자에게만)
