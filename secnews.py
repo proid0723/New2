@@ -1004,6 +1004,26 @@ def telegram_get_updates(token, after=0, timeout=20, pages=20):
     return updates
 
 
+def fetch_updates(token, after, waits=(2, 5)):
+    """telegram_get_updates, asked again when Telegram says more updates are queued than it sent.
+    A new bot once answered an empty list for 20 minutes while the admin's button presses waited
+    in its queue. Updates just sent stay in the queue count until the next call confirms them."""
+    updates = telegram_get_updates(token, after)
+    for wait in (None,) + tuple(waits):
+        if wait:
+            time.sleep(wait)
+            updates = telegram_get_updates(token, after) or updates
+        try:
+            queued = telegram_api(token, "getWebhookInfo", {}).get("result", {}).get("pending_update_count", 0)
+        except (TelegramError, OSError, ValueError):
+            return updates
+        if queued <= len(updates):
+            return updates
+        log(f"telegram: {queued} update(s) queued but {len(updates)} received"
+            + ("; asking again" if wait != waits[-1] else ""))
+    return updates
+
+
 def subscriber_key(token):
     """Key for the subscriber file, derived from the bot token. The file sits in the Actions
     cache of a public repository; without the token (a secret) the chat ids stay unreadable."""
@@ -1647,15 +1667,8 @@ def main(argv=None):
     # With an admin (the test chat) and require_approval on, new /start requests wait for the admin.
     approver = os.environ.get("SECNEWS_ADMIN_CHAT", "").strip() if config.get("require_approval", True) else ""
     try:
-        info = telegram_api(token, "getWebhookInfo", {}).get("result", {})
-        log(f"telegram: webhook {'SET' if info.get('url') else 'none'}, "
-            f"pending {info.get('pending_update_count')}, allowed {info.get('allowed_updates')}, "
-            f"offset after {load_subscribers(subs_path, key).get('last_update', 0) % 1000}")
-    except (TelegramError, OSError, ValueError) as e:
-        log(f"warning: getWebhookInfo failed: {e}")
-    try:
-        added, removed = sync_subscribers(subs_path, telegram_get_updates(
-                                              token, load_subscribers(subs_path, key).get("last_update", 0)),
+        added, removed = sync_subscribers(subs_path, fetch_updates(token, load_subscribers(subs_path, key)
+                                                                   .get("last_update", 0)),
                                           send=lambda cid, text, markup=None: telegram_send(token, cid, text,
                                                                                              markup=markup),
                                           key=key, admin=approver, welcome=wording(config, "welcome"),

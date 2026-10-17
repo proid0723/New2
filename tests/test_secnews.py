@@ -881,6 +881,29 @@ class SubscriberTests(unittest.TestCase):
         self.assertIn("offset=101", calls[1])
         self.assertIn("callback_query", urllib.parse.unquote(calls[0]))  # button presses are requested
 
+    def fetch_with(self, answers, queued):
+        saved = secnews.telegram_get_updates, secnews.telegram_api, secnews.time.sleep
+        calls = []
+        secnews.telegram_get_updates = lambda token, after: calls.append(after) or answers.pop(0)
+        secnews.telegram_api = lambda token, method, params: {"result": {"pending_update_count": queued}}
+        secnews.time.sleep = lambda s: None
+        try:
+            return secnews.fetch_updates("t", 7), calls
+        finally:
+            secnews.telegram_get_updates, secnews.telegram_api, secnews.time.sleep = saved
+
+    def test_fetch_asks_again_when_queued_updates_were_not_sent(self):
+        press = {"update_id": 8, "callback_query": {}}
+        got, calls = self.fetch_with([[], [press]], queued=1)
+        self.assertEqual(got, [press])
+        self.assertEqual(calls, [7, 7])
+
+    def test_fetch_asks_once_when_nothing_is_queued(self):
+        got, calls = self.fetch_with([[]], queued=0)
+        self.assertEqual((got, calls), ([], [7]))
+        got, calls = self.fetch_with([[{"update_id": 8}]], queued=1)  # just sent, not yet confirmed
+        self.assertEqual(len(calls), 1)
+
 
 class ScheduleTests(unittest.TestCase):
     def test_on_the_hour(self):
