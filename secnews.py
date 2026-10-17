@@ -973,7 +973,10 @@ def parse_chat_ids(value):
 # ----------------------------------------------------------- subscriptions
 
 GOODBYE = "구독을 해지했어요. 다시 받으려면 /start 를 보내 주세요."
-REQUESTED = "구독 신청이 접수됐어요. 관리자 승인 후 뉴스를 보내 드려요."
+REQUESTED = ("구독 신청이 접수됐어요. 관리자가 승인하면 \"구독이 시작됐어요\" 메시지와 함께 뉴스를 보내 드려요.\n"
+             "⏳ /start는 한 번만 누르면 돼요. 승인까지 시간이 조금 걸릴 수 있어요.")
+# Shown under the admin's buttons; dropped again when the result replaces the buttons.
+APPROVE_HINT = "⏳ 버튼은 한 번만 누르세요. 5~10분 안에 처리되고 이 메시지가 \"승인 완료\"로 바뀌어요."
 REJECTED = "구독 신청이 승인되지 않았어요."
 # Telegram errors that mean the chat will never accept messages again.
 GONE = re.compile(r"blocked by the user|user is deactivated|chat not found|kicked", re.I)
@@ -1208,12 +1211,14 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
             say(cid, REJECTED)
         for name in tests:
             say(admin, "🧪 (테스트) 신청자에게는 이렇게 가요:\n" + REQUESTED)
-            say(admin, f"🔔 <b>새 구독 신청</b> (테스트)\n이름: {html.escape(name)}\nID: <code>{admin}</code>",
+            say(admin, f"🔔 <b>새 구독 신청</b> (테스트)\n이름: {html.escape(name)}\nID: <code>{admin}</code>"
+                       f"\n\n{APPROVE_HINT}",
                 {"inline_keyboard": [[{"text": "✅ 승인", "callback_data": "test:ok"},
                                       {"text": "❌ 거절", "callback_data": "test:no"}]]})
         for cid in requests:
             say(cid, REQUESTED)
-            say(admin, f"🔔 <b>새 구독 신청</b>\n이름: {html.escape(pending[cid])}\nID: <code>{cid}</code>",
+            say(admin, f"🔔 <b>새 구독 신청</b>\n이름: {html.escape(pending[cid])}\nID: <code>{cid}</code>"
+                       f"\n\n{APPROVE_HINT}",
                 {"inline_keyboard": [[{"text": "✅ 승인", "callback_data": f"ok:{cid}"},
                                       {"text": "❌ 거절", "callback_data": f"no:{cid}"}]]})
     stamp = datetime.now(KST).strftime("%H:%M")
@@ -1240,8 +1245,9 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
                 pass  # expected: the press is usually minutes old by now
             if msg.get("message_id"):
                 try:
+                    text = msg.get("text", "").replace(APPROVE_HINT, "").rstrip()
                     api("editMessageText", {"chat_id": msg["chat"]["id"], "message_id": msg["message_id"],
-                                            "text": f"{msg.get('text', '')}\n\n{note} ({stamp})"})
+                                            "text": f"{text}\n\n{note} ({stamp})"})
                     edited = True
                 except (TelegramError, OSError) as e:
                     if "not modified" in str(e):

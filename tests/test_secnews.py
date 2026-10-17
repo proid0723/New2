@@ -746,6 +746,16 @@ class SubscriberTests(unittest.TestCase):
         self.assertIn("answerCallbackQuery", self.api_calls)
         self.assertIn("editMessageText", self.api_calls)
 
+    def test_hint_under_buttons_goes_away_with_the_result(self):
+        self.approval_sync([upd(1, 11, "/start")])
+        self.assertIn(secnews.APPROVE_HINT, self.sent[1][1])
+        edits = []
+        press = self.press(2, "ok:11")
+        press["callback_query"]["message"]["text"] = "🔔 새 구독 신청\nID: 11\n\n" + secnews.APPROVE_HINT
+        secnews.sync_subscribers(self.path, [press], key=self.key, admin="99", send=lambda *a: None,
+                                 api=lambda method, params: edits.append(params.get("text")))
+        self.assertTrue(edits[-1].startswith("🔔 새 구독 신청\nID: 11\n\n✅ 승인 완료"), edits[-1])
+
     def test_admin_rehearsal_changes_nothing(self):
         self.approval_sync([upd(1, 99, "/test"), upd(2, 11, "/test")])
         self.assertEqual([m[0] for m in self.sent], ["99", "99"])  # only the admin's /test counts
