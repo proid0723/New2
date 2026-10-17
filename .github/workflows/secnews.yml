@@ -8,6 +8,8 @@ on:
     # Every 5 minutes: new /start subscribers are picked up and welcomed. News goes out on the
     # first run of each clock hour (digest_on_the_hour in feeds.json). GitHub may start late.
     - cron: '*/5 * * * *'
+    # Hourly check that the 5-minute runs (started by cron-job.org) are still coming.
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       reset:
@@ -44,7 +46,9 @@ jobs:
         run: python3 -m unittest discover -s tests -v
 
   send:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.list_chats)
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *')
+      || (github.event_name == 'workflow_dispatch' && !inputs.list_chats)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Never run two senders at once, or both could send the same items.
@@ -158,6 +162,22 @@ jobs:
         with:
           path: .state
           key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # A run that never starts cannot report itself: tell the admin when the 5-minute runs stop.
+  watchdog:
+    if: github.event_name == 'schedule' && github.event.schedule == '17 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the timer still runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ADMIN_CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
+        run: python3 tools/watchdog.py
 
   chats:
     if: github.event_name == 'workflow_dispatch' && inputs.list_chats

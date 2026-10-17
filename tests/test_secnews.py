@@ -998,6 +998,17 @@ class SubscriberTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class WatchdogTests(unittest.TestCase):
+    def test_minutes_since_last_run(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+        import watchdog
+        now = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)
+        runs = [{"created_at": "2026-10-17T09:20:00Z"}, {"created_at": "2026-10-17T09:55:00Z"}]
+        self.assertEqual(watchdog.minutes_since_last_run(runs, now), 5)
+        self.assertIsNone(watchdog.minutes_since_last_run([], now))
+        self.assertIn("40분째", watchdog.message(40))
+
+
 class ScheduleTests(unittest.TestCase):
     def test_on_the_hour(self):
         cfg = {"digest_on_the_hour": True}
