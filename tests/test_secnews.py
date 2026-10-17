@@ -256,6 +256,22 @@ class RunTests(unittest.TestCase):
                     now=NOW, fetcher=lambda u: quiet_feed)  # a first run only records what it sees
         self.assertEqual(got, [])
 
+    def test_night_notice_once_at_the_start_of_quiet_hours(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], quiet_hours=[22, 6], night_notice=True)
+        empty = self.rss()
+        got = []
+        send = lambda text, silent=False: got.append((text, silent)) or True
+        evening = datetime(2026, 10, 15, 12, 5, tzinfo=timezone.utc)  # 21:05 KST
+        secnews.run(cfg, self.state, send, now=evening, fetcher=lambda u: empty, bootstrap_send=True)
+        got.clear()
+        for minutes in (60, 65, 120):  # 22:05, 22:10, 23:05 KST
+            secnews.run(cfg, self.state, send, now=evening + timedelta(minutes=minutes), fetcher=lambda u: empty)
+        notices = [g for g in got if "취침 모드" in g[0]]
+        self.assertEqual(len(notices), 1)
+        self.assertTrue(notices[0][1])  # silent
+        self.assertIn("05시까지", notices[0][0])
+        self.assertIn("06시에", notices[0][0])
+
     def test_story_sent_earlier_is_not_sent_again_from_another_outlet(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
         d = "Wed, 15 Oct 2026 01:00:00 +0000"

@@ -389,6 +389,8 @@ TEXTS = {
     "instant_title": "🚨 <b>긴급 보안 속보</b>",
     "welcome": "🛡 <b>보안 속보 구독이 시작됐어요.</b>\n보안 속보를 정기적으로 모아서 보내 드려요.\n"
                "그만 받으려면 /stop 을 보내 주세요.",
+    "night": "🌙 지금부터 {until}시까지는 취침 모드예요. 정기 발송을 쉬고, {morning}시에 밤사이 소식을 한꺼번에 보내 "
+             "드릴게요.\n🚨 긴급 속보는 알림 소리 없이 바로 보내요.",
     "no_news": "📭 {time} 기준 새로 보낼 보안 뉴스가 없어요. 새 소식이 생기면 다음 정각에 보내 드릴게요.",
 }
 
@@ -465,6 +467,10 @@ def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=Non
              "recent": recent or [], "feed_failures": feed_failures or {}}
     if instant_checked is not None:
         state["instant_checked"] = instant_checked
+    try:  # the night the bedtime notice went out, written by night_notice
+        state["night_notice"] = json.loads(path.read_text(encoding="utf-8"))["night_notice"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
 
@@ -1414,6 +1420,26 @@ def quiet(config, now):
     return (start <= h or h < end) if start > end else start <= h < end
 
 
+def night_notice(config, state, state_path, sender, now):
+    """With "night_notice": true, tell everyone once, at the first run of the quiet hours' first
+    hour, that regular digests pause until the morning round-up."""
+    hours = config.get("quiet_hours")
+    local = now.astimezone(KST)
+    if not (config.get("night_notice") and hours and state is not None and local.hour == hours[0]):
+        return
+    if state.get("night_notice") == f"{local:%Y-%m-%d}":
+        return
+    end = hours[1]
+    text = wording(config, "night").replace("{until}", f"{(end - 1) % 24:02d}").replace("{morning}", f"{end:02d}")
+    if not sender(text, silent=True):
+        log("warning: the night notice was not delivered")
+        return
+    state["night_notice"] = f"{local:%Y-%m-%d}"
+    stored = dict(load_state(state_path) or state, night_notice=state["night_notice"])
+    state_path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+    log("night notice sent")
+
+
 def morning(config, now):
     """The first hour after quiet hours: the overnight round-up."""
     hours = config.get("quiet_hours")
@@ -1455,6 +1481,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if not force and not due(state, config, now):
         if quiet(config, now):
             log(f"quiet hours: next digest at {config['quiet_hours'][1]:02d}:00 KST")
+            night_notice(config, state, state_path, sender, now)
         else:
             log(f"next digest in about {next_digest_minutes(state, config, now):.0f} minutes")
         if config.get("instant_alerts", True):
