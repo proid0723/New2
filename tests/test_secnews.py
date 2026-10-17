@@ -232,6 +232,30 @@ class RunTests(unittest.TestCase):
                        for t, d in items)
         return f'<?xml version="1.0"?><rss version="2.0"><channel>{body}</channel></rss>'.encode()
 
+    def test_no_news_notice(self):
+        quiet_feed = self.rss(("Company opens new office", "Wed, 15 Oct 2026 01:00:00 +0000"))
+        got, alerts = [], []
+        for mode in ("all", "admin", "off"):
+            got.clear(), alerts.clear()
+            state = Path(self.dir.name) / mode / "seen.json"
+            cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], no_news_notice=mode)
+            secnews.run(cfg, state, lambda text, silent=False: got.append((text, silent)) or True, now=NOW,
+                        fetcher=lambda u: quiet_feed, bootstrap_send=True, alert=alerts.append)
+            if mode == "all":
+                self.assertEqual(len(got), 1)
+                self.assertTrue(got[0][1])  # silent
+                self.assertIn("새로 보낼 보안 뉴스가 없어요", got[0][0])
+            elif mode == "admin":
+                self.assertEqual((len(got), len(alerts)), (0, 1))
+            else:
+                self.assertEqual((got, alerts), ([], []))
+        got.clear()
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], no_news_notice="all")
+        secnews.run(cfg, Path(self.dir.name) / "first" / "seen.json",
+                    lambda text, silent=False: got.append(text) or True,
+                    now=NOW, fetcher=lambda u: quiet_feed)  # a first run only records what it sees
+        self.assertEqual(got, [])
+
     def test_story_sent_earlier_is_not_sent_again_from_another_outlet(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
         d = "Wed, 15 Oct 2026 01:00:00 +0000"
@@ -767,6 +791,14 @@ class SubscriberTests(unittest.TestCase):
         other = secnews.subscriber_key("999:new-token")  # a new bot token cannot read the old backup
         secnews.save_subscribers(self.path, {"ids": ["44"], "stopped": []}, other)
         self.assertTrue(secnews.backup_subscribers(self.path, backup, other))
+
+    def test_admin_asks_for_subscriber_count(self):
+        secnews.add_subscribers(self.path, ["11", "22"], self.key)
+        self.approval_sync([upd(1, 33, "/start"), upd(2, 11, "/stats"), upd(3, 99, "/stats")])
+        stats = [m for m in self.sent if "구독 현황" in m[1]]
+        self.assertEqual([m[0] for m in stats], ["99"])  # only the admin gets an answer
+        self.assertIn("구독 중: 2명", stats[0][1])
+        self.assertIn("승인 대기: 1명", stats[0][1])
 
     def test_hint_under_buttons_goes_away_with_the_result(self):
         self.approval_sync([upd(1, 11, "/start")])

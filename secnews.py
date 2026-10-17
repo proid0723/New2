@@ -389,6 +389,7 @@ TEXTS = {
     "instant_title": "🚨 <b>긴급 보안 속보</b>",
     "welcome": "🛡 <b>보안 속보 구독이 시작됐어요.</b>\n보안 속보를 정기적으로 모아서 보내 드려요.\n"
                "그만 받으려면 /stop 을 보내 주세요.",
+    "no_news": "📭 {time} 기준 새로 보낼 보안 뉴스가 없어요. 새 소식이 생기면 다음 정각에 보내 드릴게요.",
 }
 
 
@@ -1147,6 +1148,7 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
     pending, denied, former = dict(subs["pending"]), dict.fromkeys(subs["denied"]), dict.fromkeys(subs["former"])
     last_seen = subs.get("last_update", 0)
     added, removed, requests, rejected, presses, tests = [], [], [], [], [], []
+    stats_asked = False
     if updates:
         kinds = [k for u in updates for k in ("message", "callback_query", "my_chat_member") if k in u]
         log(f"telegram updates: {len(updates)} ({', '.join(sorted(set(kinds)))}), "
@@ -1193,12 +1195,16 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
                 continue
             text = (msg.get("text") or "").strip().lower()
             action = ("stop" if text.startswith("/stop") else "start" if text.startswith("/start")
-                      else "test" if text.startswith("/test") else "chat")
+                      else "test" if text.startswith("/test")
+                      else "stats" if text.startswith("/stats") else "chat")
         cid = str(chat["id"])
         if action == "test":
             # The admin rehearses a request: same messages and buttons, nothing stored.
             if admin and cid == admin:
                 tests.append(_chat_name(chat))
+            continue
+        if action == "stats":
+            stats_asked = stats_asked or bool(admin and cid == admin)  # others get no answer
             continue
         if action == "stop":
             if cid in ids:
@@ -1249,6 +1255,10 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
                        f"\n\n{APPROVE_HINT}",
                 {"inline_keyboard": [[{"text": "✅ 승인", "callback_data": "test:ok"},
                                       {"text": "❌ 거절", "callback_data": "test:no"}]]})
+        if stats_asked:
+            say(admin, f"📊 <b>구독 현황</b> ({datetime.now(KST):%m/%d %H:%M})\n"
+                       f"· 구독 중: {sum(1 for c in ids if c not in stopped)}명\n"
+                       f"· 승인 대기: {len(pending)}명\n· 해지: {len(stopped)}명\n· 거절: {len(denied)}명")
         for cid in requests:
             say(cid, REQUESTED)
             say(admin, f"🔔 <b>새 구독 신청</b>\n이름: {html.escape(pending[cid])}\nID: <code>{cid}</code>"
@@ -1528,6 +1538,15 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
                 raise TelegramError("message was not delivered to any chat")
         sent += items
     log(f"sent {len(sent)} of {len(fresh)} new items")
+    # feeds.json "no_news_notice": "all" (silent message to everyone), "admin", or "off" (default).
+    notice = config.get("no_news_notice", "off")
+    if not sent and digests and notice != "off":
+        text = wording(config, "no_news").replace("{time}", f"{now.astimezone(KST):%H:%M}")
+        if notice == "admin":
+            if alert:
+                alert(text)
+        elif not sender(text, silent=True):
+            log("warning: the no-news notice was not delivered")
 
     ts = now.timestamp()
     for key, _ in fresh:
