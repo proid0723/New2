@@ -746,6 +746,28 @@ class SubscriberTests(unittest.TestCase):
         self.assertIn("answerCallbackQuery", self.api_calls)
         self.assertIn("editMessageText", self.api_calls)
 
+    def test_backup_follows_membership_changes_only(self):
+        backup = Path(self.dir.name) / "backup" / "subscribers.json"
+        secnews.add_subscribers(self.path, ["11"], self.key)
+        self.assertTrue(secnews.backup_subscribers(self.path, backup, self.key))
+        self.assertEqual(secnews.load_subscribers(backup, self.key)["ids"], ["11"])
+        self.sync([{"update_id": 1, "message": {}}])  # only last_update moves; nobody joins
+        self.assertFalse(secnews.backup_subscribers(self.path, backup, self.key))
+        self.sync([upd(2, 33, "/start")])
+        self.assertTrue(secnews.backup_subscribers(self.path, backup, self.key))
+        self.assertIn("33", secnews.load_subscribers(backup, self.key)["ids"])
+
+    def test_empty_list_does_not_overwrite_a_readable_backup(self):
+        backup = Path(self.dir.name) / "backup.json"
+        secnews.add_subscribers(self.path, ["11"], self.key)
+        secnews.backup_subscribers(self.path, backup, self.key)
+        secnews.save_subscribers(self.path, secnews.load_subscribers(Path("/nonexistent"), self.key), self.key)
+        self.assertFalse(secnews.backup_subscribers(self.path, backup, self.key))
+        self.assertEqual(secnews.load_subscribers(backup, self.key)["ids"], ["11"])
+        other = secnews.subscriber_key("999:new-token")  # a new bot token cannot read the old backup
+        secnews.save_subscribers(self.path, {"ids": ["44"], "stopped": []}, other)
+        self.assertTrue(secnews.backup_subscribers(self.path, backup, other))
+
     def test_hint_under_buttons_goes_away_with_the_result(self):
         self.approval_sync([upd(1, 11, "/start")])
         self.assertIn(secnews.APPROVE_HINT, self.sent[1][1])

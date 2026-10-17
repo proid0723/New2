@@ -1081,6 +1081,40 @@ def save_subscribers(path, subs, key=None):
     path.write_bytes(raw)
 
 
+def _readable_with(path, key):
+    """True when the subscriber file exists and this bot token can open it."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if "ct" not in data:
+        return not key
+    nonce, ct = base64.b64decode(data["nonce"]), base64.b64decode(data["ct"])
+    return bool(key) and hmac.compare_digest(base64.b64decode(data["mac"]),
+                                             hmac.new(key, nonce + ct, hashlib.sha256).digest())
+
+
+def backup_subscribers(path, backup, key=None):
+    """Copy the (encrypted) subscriber file to backup when who is subscribed has changed, so a lost
+    Actions cache does not lose the list. Returns True when the backup was written. An empty list
+    never replaces a backup this token can still read: that looks like a lost cache, not a change."""
+    if not path.exists():
+        return False
+    current = load_subscribers(path, key)
+    if _readable_with(backup, key):
+        old = load_subscribers(backup, key)
+        if all((sorted(current[f]) if isinstance(current[f], list) else current[f])
+               == (sorted(old[f]) if isinstance(old[f], list) else old[f])
+               for f in ("ids", "stopped", "pending", "denied", "former")):
+            return False
+        if old["ids"] and not current["ids"]:
+            log("warning: subscriber list is empty but the backup is not; keeping the backup")
+            return False
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_bytes(path.read_bytes())
+    return True
+
+
 def add_subscribers(path, chat_ids, key=None):
     """Fold ids from feeds.json or the secret into the stored list (people who sent /stop stay out)."""
     subs = load_subscribers(path, key)
@@ -1623,7 +1657,16 @@ def main(argv=None):
                     help="when no state file exists, record current items without sending them")
     # SECNEWS_CONFIG points at the settings checked out from the private repository, when there is one.
     ap.add_argument("--config", type=Path, default=Path(os.environ.get("SECNEWS_CONFIG") or CONFIG_PATH))
+    ap.add_argument("--backup-subscribers", type=Path, metavar="FILE",
+                    help="copy the encrypted subscriber list to FILE if it changed; prints changed/unchanged")
     args = ap.parse_args(argv)
+
+    if args.backup_subscribers:
+        state = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()
+        key = subscriber_key(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip())
+        print("changed" if backup_subscribers(state.with_name("subscribers.json"), args.backup_subscribers,
+                                              key) else "unchanged")
+        return 0
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
     state_path = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()

@@ -42,7 +42,7 @@ GitHub Actions(공개 레포는 무료)에서 돌고, 서버나 유료 서비스
 - 관리자가 봇에 **/test**를 보내면 구독 목록을 바꾸지 않고 신청→버튼→처리 과정을 미리 볼 수 있습니다.
 - 승인제를 끄려면 설정 파일의 `"require_approval": false`.
 
-구독자 아이디와 이름은 공개 레포에 두지 않고, 봇 토큰으로 암호화한 `subscribers.json`에 담아 Actions 캐시에 보관합니다. 로그에는 `12***90`처럼 일부만 보입니다.
+구독자 아이디와 이름은 공개 레포에 두지 않고, 봇 토큰으로 암호화한 `subscribers.json`에 담아 Actions 캐시에 보관합니다. 구독자가 바뀔 때마다 같은 암호화 파일을 비공개 레포 `New2_config`의 `backup/`에도 저장해서, 캐시가 지워지면 다음 실행 때 거기서 복구합니다 (봇 토큰을 바꾸면 예전 백업은 열 수 없어 목록이 새로 시작됩니다). 로그에는 `12***90`처럼 일부만 보입니다.
 
 ## 설정
 
@@ -53,7 +53,7 @@ Settings → Secrets and variables → Actions → **Secrets**
 | `TELEGRAM_BOT_TOKEN` | BotFather에서 받은 봇 토큰 |
 | `TELEGRAM_TEST_CHAT_ID` (또는 `..._IDS`) | 관리자(본인) 텔레그램 ID: 테스트, 승인 버튼, 고장 알림을 받음 |
 | `GEMINI_API_KEY` | Google AI Studio API 키 (없으면 키워드 판단 + 구글 번역) |
-| `CONFIG_REPO_TOKEN` | 비공개 설정 레포 `New2_config` 읽기 전용 토큰 (Contents: Read-only) |
+| `CONFIG_REPO_TOKEN` | 비공개 설정 레포 `New2_config` 토큰 (Contents: Read and write, 설정 읽기와 구독자 백업 저장) |
 | `TELEGRAM_CHAT_IDS` | (선택) 승인 없이 넣을 구독자 ID. 다음 실행 때 암호화 목록에 합쳐짐 |
 
 cron-job.org: 5분마다 `POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/secnews.yml/dispatches`,
@@ -78,7 +78,7 @@ python3 secnews.py --dry-run               # 보내지 않고 메시지만 출�
 
 ## 설정 파일 (비공개)
 - 출처·키워드·분류·발송 시간 같은 설정(`feeds.json`)은 공개 레포가 아니라 **비공개 레포 `New2_config`**에 있습니다.
-  실행할 때마다 `CONFIG_REPO_TOKEN`(그 레포 읽기 전용 토큰)으로 가져와서 쓰고, 공개 레포와 로그에는 남지 않습니다.
+  실행할 때마다 `CONFIG_REPO_TOKEN`으로 가져와서 쓰고, 공개 레포와 로그에는 남지 않습니다.
   Actions 로그에는 출처가 `source 1`처럼 번호로만 찍힙니다.
 - 토큰이 만료되거나 설정 파일이 없으면 실행이 실패하고 관리자에게 알림이 갑니다.
 - 단위 테스트는 `tests/test_feeds.json`(테스트에 쓰이는 단어만 담은 예시 설정)으로 돕니다.

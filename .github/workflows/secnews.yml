@@ -74,6 +74,14 @@ jobs:
           path: .state
           key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: secnews-state-
+      # The subscriber list is also backed up (still encrypted) in the private repository, so a
+      # cache that was evicted or deleted does not lose everyone who subscribed.
+      - name: Restore subscribers from the backup
+        run: |
+          if [ ! -f .state/subscribers.json ] && [ -f .private-config/backup/subscribers.json ]; then
+            mkdir -p .state && cp .private-config/backup/subscribers.json .state/subscribers.json
+            echo "::warning::Subscriber list restored from the backup in New2_config"
+          fi
       - name: Collect and send
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -121,6 +129,29 @@ jobs:
           curl -s -o /dev/null --data-urlencode "chat_id=$CHAT" \
             --data-urlencode "text=⚠️ 보안 속보 봇 실행이 실패했어요. 로그: $RUN_URL" \
             "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" || true
+      # Needs CONFIG_REPO_TOKEN with Contents: Read and write on New2_config. Commits only when
+      # someone joins or leaves; a read-only token just leaves a warning.
+      - name: Back up subscribers
+        if: success() && !(inputs.test_me && !inputs.scheduled) && env.HAS_PRIVATE_CONFIG == 'true'
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+        run: |
+          [ "$(python3 secnews.py --backup-subscribers .private-config/backup/subscribers.json)" = changed ] || exit 0
+          basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
+          cd .private-config
+          branch="$(git symbolic-ref --short -q HEAD || echo main)"
+          git add backup/subscribers.json
+          git -c user.name="secnews" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Back up subscriber list"
+          for try in 1 2; do
+            git -c http.extraheader="$auth" pull -q --rebase origin "$branch" && \
+              git -c http.extraheader="$auth" push -q origin HEAD:"$branch" && exit 0
+          done
+          echo "::warning::Could not push the subscriber backup (CONFIG_REPO_TOKEN needs Contents: Read and write)"
       - name: Save sent-item state
         if: success() && !(inputs.test_me && !inputs.scheduled)
         uses: actions/cache/save@v4
