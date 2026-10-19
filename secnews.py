@@ -658,10 +658,10 @@ class GeminiBudget:
         used = data.get("used") if data.get("day") == self.day else None
         self.used = used if isinstance(used, dict) else {}
 
-    def take(self):
-        """Count one request and return the model to send it to."""
+    def take(self, skip=()):
+        """Count one request and return the model to send it to (not one of skip)."""
         for model, cap in self.models:
-            if self.used.get(model, 0) < cap:
+            if model not in skip and self.used.get(model, 0) < cap:
                 self.used[model] = self.used.get(model, 0) + 1
                 try:
                     self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -696,9 +696,10 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }).encode()
+    busy = set()  # models that answered "overloaded" to this request
     while True:
         if GEMINI_BUDGET is not None:
-            model = GEMINI_BUDGET.take()
+            model = GEMINI_BUDGET.take(skip=busy)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(url, data=body, headers={
             "Content-Type": "application/json", "x-goog-api-key": key, "User-Agent": USER_AGENT})
@@ -712,12 +713,19 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
                 log(f"Gemini {model}: HTTP {e.code}; switching to the next model for today")
                 GEMINI_BUDGET.exhaust(model)
                 continue
+            # 500/502/503/504: Google is overloaded right now. Another model usually answers; the
+            # busy one stays available for later requests.
+            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and len(busy) < 2:
+                log(f"Gemini {model}: HTTP {e.code}; trying another model")
+                busy.add(model)
+                time.sleep(3)
+                continue
             raise
         log(f"Gemini request answered by {model}")
         return json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
 
 
-def gemini_translate_batch(texts, key, model="gemini-flash-latest", timeout=60):
+def gemini_translate_batch(texts, key, model="gemini-flash-latest", timeout=120):
     """Translate several texts in one Gemini request. Raises on any failure."""
     out = gemini_json(GEMINI_PROMPT + json.dumps(texts, ensure_ascii=False), key, model, timeout)
     if not isinstance(out, list) or len(out) != len(texts) or not all(isinstance(t, str) and t.strip() for t in out):

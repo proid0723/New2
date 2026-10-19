@@ -1082,6 +1082,33 @@ class SubscriberTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class GeminiRetryTests(unittest.TestCase):
+    def test_overloaded_model_hands_the_request_to_another(self):
+        import io
+        import urllib.error
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json", [("a", 5), ("b", 5), ("c", 5)])
+        asked = []
+
+        def fake(req, timeout=0):
+            model = req.full_url.split("/models/")[1].split(":")[0]
+            asked.append(model)
+            if model == "a":
+                raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, None)
+            return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": "[1]"}]}}]}).encode())
+        saved = secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep
+        secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = budget, fake, lambda s: None
+        try:
+            self.assertEqual(secnews.gemini_json("p", "k"), [1])
+            self.assertEqual(asked, ["a", "b"])
+            asked.clear()
+            secnews.gemini_json("p", "k")
+            self.assertEqual(asked[0], "a")  # still tried first next time: busy is not used up
+        finally:
+            secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
+
+
 class QuietLogTests(unittest.TestCase):
     def test_public_log_shows_summary_and_holds_the_rest(self):
         import contextlib
