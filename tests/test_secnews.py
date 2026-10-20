@@ -872,7 +872,7 @@ class SubscriberTests(unittest.TestCase):
         self.sync([{"update_id": 1, "message": {}}])  # any run saves the file again
         data = json.loads(self.path.read_text())
         self.assertEqual((data["v"], len(base64.b64decode(data["nonce"]))), (2, 12))
-        self.assertNotIn("11", self.path.read_text())
+        self.assertNotIn('"11"', self.path.read_text())  # base64 text may contain 11 by chance, not "11"
         self.assertEqual(self.ids(), ["11"])
         self.assertTrue(secnews.backup_subscribers(self.path, backup, self.key))  # backup converted too
         self.assertEqual(json.loads(backup.read_text())["v"], 2)
