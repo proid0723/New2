@@ -713,9 +713,9 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
                 log(f"Gemini {model}: HTTP {e.code}; switching to the next model for today")
                 GEMINI_BUDGET.exhaust(model)
                 continue
-            # 500/502/503/504: Google is overloaded right now. Another model usually answers; the
-            # busy one stays available for later requests.
-            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and len(busy) < 2:
+            # 500/502/503/504: Google is overloaded right now. Another model may answer (up to all
+            # four are tried); the busy one stays available for later requests.
+            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and len(busy) < 3:
                 log(f"Gemini {model}: HTTP {e.code}; trying another model")
                 busy.add(model)
                 time.sleep(3)
@@ -822,6 +822,7 @@ class GeminiClassifier:
     def __call__(self, items, told=()):
         """Return the items to keep, best keyword score first in, same order out."""
         judged, dropped, dups, failed = {}, 0, 0, False
+        self.failed = False
         # One request per digest: the best-ranked 60 are judged, the rest keep keyword results
         # (they are past the per-digest caps nearly always).
         head = items[:self.limit]
@@ -838,7 +839,7 @@ class GeminiClassifier:
                     judged[id(it)] = r
             except Exception as e:
                 log(f"warning: Gemini classification failed ({e}); keeping keyword results")
-                failed = True
+                failed = self.failed = True
                 break
         kept = []
         for it in items:
@@ -1634,6 +1635,12 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if classify and news:
         # Gemini also spots stories sent in an earlier digest, across languages.
         kept = classify(news, [r[3] if len(r) > 3 and r[3] else r[0] for r in recent])
+        # Gemini overloaded (it happens around 06:00 KST, US afternoon): the digest waits for the
+        # next 5-minute run rather than going out with keyword categories and machine translation.
+        # From half past the hour it goes out anyway.
+        if getattr(classify, "failed", False) and not force and now.astimezone(KST).minute < 30:
+            log("warning: Gemini is unavailable; the digest waits for the next run")
+            return []
         for it in news:
             if it not in kept:
                 decide(it, it.get("drop_reason", "gemini_irrelevant"))

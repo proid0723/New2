@@ -399,6 +399,24 @@ class RunTests(unittest.TestCase):
         self.assertEqual(mal["focus_sectors"], ["항공사"])
         self.assertLess(mal["score"], 3)
 
+    def test_digest_waits_while_gemini_is_overloaded(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
+        feed = self.rss(("Zero-day actively exploited in router", "Wed, 15 Oct 2026 01:00:00 +0000"))
+        secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: self.rss(), bootstrap_send=True)
+        broken = secnews.GeminiClassifier("k", cfg)
+        saved = secnews.gemini_classify
+        secnews.gemini_classify = lambda *a, **k: (_ for _ in ()).throw(OSError("503"))
+        try:
+            top = NOW.replace(minute=0) + timedelta(hours=1)
+            self.assertEqual(secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=5),
+                                         fetcher=lambda u: feed, classify=broken), [])
+            self.assertEqual(self.sent, [])  # waits; the items stay new
+            sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=35),
+                               fetcher=lambda u: feed, classify=broken)
+            self.assertEqual(len(sent), 1)  # past half past: sent with keyword results
+        finally:
+            secnews.gemini_classify = saved
+
     def test_gemini_drops_same_story_in_other_language_and_stories_already_sent(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
         d = "Wed, 15 Oct 2026 01:00:00 +0000"
@@ -442,8 +460,10 @@ class RunTests(unittest.TestCase):
             raise OSError("429")
         secnews.gemini_classify = broken
         try:
-            sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed,
-                               bootstrap_send=True, classify=secnews.GeminiClassifier("k", cfg))
+            # Past half past the hour, so the digest does not wait for Gemini any longer.
+            sent = secnews.run(cfg, self.state, self.sender, now=NOW + timedelta(minutes=35),
+                               fetcher=lambda u: feed, bootstrap_send=True,
+                               classify=secnews.GeminiClassifier("k", cfg))
         finally:
             secnews.gemini_classify = saved
         self.assertEqual([i["title"] for i in sent], ["Zero-day actively exploited"])
