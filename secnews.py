@@ -813,7 +813,7 @@ class GeminiClassifier:
     """Second opinion on the keyword filter: Gemini drops off-topic items and sets focus,
     urgency and sector. Keyword results stay for anything Gemini could not judge."""
 
-    def __init__(self, key, config, model="gemini-flash-latest", chunk=60, limit=60):
+    def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=60):
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
         self.sectors = list(config.get("sectors", {})) + list(config.get("fallback_sectors", {}))
         self.focus_sectors = list(config.get("focus_sectors", {}))
@@ -823,8 +823,9 @@ class GeminiClassifier:
         """Return the items to keep, best keyword score first in, same order out."""
         judged, dropped, dups, failed = {}, 0, 0, False
         self.failed = False
-        # One request per digest: the best-ranked 60 are judged, the rest keep keyword results
-        # (they are past the per-digest caps nearly always).
+        # The best-ranked 60 are judged, 20 per request: an hourly digest needs one request, the
+        # 06:00 round-up three smaller ones (one big request of 60 failed with 503 or timed out
+        # far more often). The rest keep keyword results; they are past the caps nearly always.
         head = items[:self.limit]
         for i in range(0, len(head), self.chunk):
             part = head[i:i + self.chunk]
