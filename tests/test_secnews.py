@@ -144,6 +144,19 @@ class SourceParserTests(unittest.TestCase):
         scorer.classify(it)
         self.assertTrue(it["focus"])
 
+    def test_blocked_outlets_are_dropped_by_name_or_domain(self):
+        raw = ("<?xml version='1.0' encoding='UTF-8'?><rss version='2.0'><channel>"
+               "<item><title>Airport outage - Example Daily</title><link>https://news.google.com/a</link><guid>a</guid></item>"
+               "<item><title>Airport outage - Good Paper</title><link>https://news.google.com/b</link><guid>b</guid></item>"
+               "</channel></rss>").encode()
+        rss = ("<?xml version='1.0' encoding='UTF-8'?><rss version='2.0'><channel>"
+               "<item><title>Airline breach</title><link>https://spam.example.net/x</link><guid>c</guid></item>"
+               "</channel></rss>").encode()
+        config = {"blocked_outlets": ["example daily", "spam.example.net", " "],
+                  "feeds": [{"name": "G", "type": "google_news", "url": "g"}, {"name": "R", "url": "r"}]}
+        items = secnews.collect(config, fetcher=lambda url: raw if url == "g" else rss)
+        self.assertEqual([it["source"] for it in items], ["Good Paper"])
+
     def test_ransomlook_posts_and_the_same_victim_from_both_sites(self):
         raw = json.dumps([
             {"post_title": "hanbit-tech.co.kr", "group_name": "Qilin", "discovered": "2026-10-15 01:00:00.123456"},

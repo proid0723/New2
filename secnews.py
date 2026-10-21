@@ -1413,14 +1413,21 @@ def feed_label(feed, n):
     return f"source {n + 1}" if os.environ.get("GITHUB_ACTIONS") else feed["name"]
 
 
+def blocked_outlet(item, blocked):
+    """Outlets the config chose to drop, matched by name or by the link's domain."""
+    where = (item.get("source", "") + " " + urllib.parse.urlsplit(item.get("link") or "").netloc).lower()
+    return any(b in where for b in blocked)
+
+
 def collect(config, fetcher=fetch, failed=None, counts=None):
     items = []
+    blocked = [b.strip().lower() for b in config.get("blocked_outlets", []) if b.strip()]
     for n, feed in enumerate(config["feeds"]):
         try:
             raw = fetcher(feed["url"])
             kind = feed.get("type", "rss")
             parser = {"rss": parse_feed, "cisa_kev": parse_kev}.get(kind) or PARSERS[kind]
-            got = parser(raw, feed["name"])
+            got = [it for it in parser(raw, feed["name"]) if not blocked_outlet(it, blocked)]
             for it in got:
                 it["security_only"] = feed.get("security_only", False)
                 it["min_score"] = feed.get("min_score")
