@@ -336,6 +336,10 @@ class RunTests(unittest.TestCase):
         self.assertIn("발송 1건", reports[0])
         self.assertIn("0건인 출처: Quiet feed", reports[0])
         self.assertEqual(secnews.load_state(self.state)["stats"]["runs"], 1)  # counting starts again
+        review = json.loads((self.state.parent / "reviews" / "2026-W43.json").read_text("utf-8"))
+        self.assertEqual(review["numbers"]["sent"], 1)
+        self.assertEqual(review["items"], [["sent", "Zero-day actively exploited in router", "F", False, ""]])
+        self.assertEqual(secnews.load_state(self.state)["stats"]["review"], {})  # a new week starts empty
 
     def test_story_sent_earlier_is_not_sent_again_from_another_outlet(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])

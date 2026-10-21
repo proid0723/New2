@@ -167,6 +167,32 @@ jobs:
               git -c http.extraheader="$auth" push -q origin HEAD:"$branch" && exit 0
           done
           echo "::warning::Could not push the subscriber backup (CONFIG_REPO_TOKEN needs Contents: Read and write)"
+      # Monday's weekly review file goes to New2_config/reports, where the weekly review reads it.
+      # It leaves .state only once pushed, so a failed push is retried on the next run.
+      - name: Hand over the weekly review file
+        if: success() && !(inputs.test_me && !inputs.scheduled) && env.HAS_PRIVATE_CONFIG == 'true'
+        continue-on-error: true
+        env:
+          TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+        run: |
+          ls .state/reviews/*.json >/dev/null 2>&1 || exit 0
+          basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
+          mkdir -p .private-config/reports && cp .state/reviews/*.json .private-config/reports/
+          cd .private-config
+          branch="$(git symbolic-ref --short -q HEAD || echo main)"
+          git add reports
+          git -c user.name="secnews" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Weekly review file"
+          for try in 1 2; do
+            if git -c http.extraheader="$auth" pull -q --rebase origin "$branch" && \
+               git -c http.extraheader="$auth" push -q origin HEAD:"$branch"; then
+              rm -f ../.state/reviews/*.json
+              exit 0
+            fi
+          done
+          echo "::warning::Could not push the weekly review file"
       - name: Save sent-item state
         if: success() && !(inputs.test_me && !inputs.scheduled)
         uses: actions/cache/save@v4

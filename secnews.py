@@ -1596,9 +1596,16 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     decisions = dict((state or {}).get("decisions", {}))
     ts = now.timestamp()
 
+    reviewed = {}
+
     def decide(item, reason):
-        """Remember for /why what became of an item (by link, else by title)."""
-        decisions[item.get("link") or title_key(item)] = [reason, ts, item["title"][:120]]
+        """Remember for /why what became of an item (by link, else by title), and for the weekly
+        review file: reason, title, source, whether it is a focus story, and its first category."""
+        key = item.get("link") or title_key(item)
+        decisions[key] = [reason, ts, item["title"][:120]]
+        if reason not in ("old", "first_run"):
+            tags = item.get("focus_sectors" if item.get("focus") else "sectors") or [""]
+            reviewed[key] = [reason, item["title"][:120], item.get("source", ""), bool(item.get("focus")), tags[0]]
 
     for item in collect(config, fetcher, failed, counts):
         if item["date"] and item["date"] > now + timedelta(hours=1):
@@ -1732,12 +1739,14 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     for n in range(len(config["feeds"])):
         feeds[str(n)] = feeds.get(str(n), 0) + counts.get(str(n), 0)
     stats["feeds"] = feeds
+    stats["review"] = dict(list({**stats.get("review", {}), **reviewed}.items())[-REVIEW_LIMIT:])
     report_week = (state or {}).get("report_week")
     local = now.astimezone(KST)
     week = f"{local:%G-W%V}"
     if local.weekday() == 0 and local.hour >= 9 and report_week != week and not first_run:
         if alert:
             alert(weekly_report(config, stats, now))
+        write_review(state_path.parent / "reviews", stats, now)
         stats, report_week = {"since": ts}, week
     save_state(state_path, seen, now, recent, failures, instant_checked=(state or {}).get("instant_checked"),
                decisions=decisions, stats=stats, report_week=report_week)
@@ -1785,6 +1794,23 @@ def explain(state, query):
         lines.append(f"\n· {html.escape(title)}\n  {datetime.fromtimestamp(when, KST):%m/%d %H:%M} 수집 · "
                      + REASONS.get(reason, reason))
     return "\n".join(lines)
+
+
+REVIEW_LIMIT = 6000
+
+
+def write_review(folder, stats, now):
+    """The week's decisions as a file the workflow commits to the private settings repo, where the
+    weekly review reads them. Feeds appear by number, as in the logs; the settings name them."""
+    local = now.astimezone(KST)
+    body = {"since": datetime.fromtimestamp(stats.get("since", now.timestamp()), KST).isoformat(),
+            "until": local.isoformat(),
+            "numbers": {k: stats.get(k, 0) for k in ("runs", "collected", "passed", "ai_dropped", "sent")},
+            "items_per_feed": stats.get("feeds", {}),
+            "fields": ["reason", "title", "source", "focus", "category"],
+            "items": list(stats.get("review", {}).values())}
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{local:%G-W%V}.json").write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def weekly_report(config, stats, now):
