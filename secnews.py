@@ -1471,6 +1471,11 @@ def already_told(item, recent, sent_cves):
     return any(similar(item["title"], r[0]) for r in recent)
 
 
+# A large-scale incident in the headline: "371만건", "2만 7천 개 서버", "3.7 million records", "27,000 servers".
+SCALE = re.compile(r"\d[\d,.]*\s*(만|억)\s*(\d[\d,.]*\s*천\s*)?(건|명|개|대|곳|명분)|"
+                   r"\b\d[\d,.]*\s*(million|billion)\b|"
+                   r"\b\d{1,3}(,\d{3})+\s+(servers|devices|systems|hosts|sites|websites|customers|users|records|accounts)\b",
+                   re.I)
 EXPLOIT_WORDS = re.compile(r"zero-day|0-day|zeroday|exploit|제로데이|악용", re.I)
 
 
@@ -1870,11 +1875,13 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         # A critical word in the headline (RCE, unauthenticated, CVSS 9…) is enough to ask Gemini,
         # which applies the strict urgent rules.
         # A feed marked "instant": "all" (a narrow topic search) has every new item asked about.
+        # So is a breach or attack of large scale ("371만 건 유출", "27,000 servers infected").
         signal = (item["id"].startswith("kev:") or any(r.search(text) for r in strong)
-                  or any(r.search(item["title"].lower()) for r in scorer.critical))
+                  or any(r.search(item["title"].lower()) for r in scorer.critical)
+                  or bool(item["security_hits"] and classify and SCALE.search(item["title"])))
         if item.get("instant_all") and classify:
             signal = item["focus_security"] or item["security_hits"]
-        elif item["score"] < 3:
+        elif item["score"] < 3 and not (classify and signal and SCALE.search(item["title"])):
             signal = False
         if first or not signal or already_told(item, urgent_told, sent_cves):
             continue

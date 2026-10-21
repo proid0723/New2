@@ -602,6 +602,30 @@ class RunTests(unittest.TestCase):
         self.assertEqual(asked, ["공항 관제 시스템 해킹 피해 확인"])  # no security word, not asked
         self.assertEqual([i["title"] for i in sent], ["공항 관제 시스템 해킹 피해 확인"])
 
+    def test_large_breach_headline_is_an_alert_candidate(self):
+        cfg, calls, sender = self.instant_setup()
+        start = datetime(2026, 10, 17, 10, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        empty = self.rss(("Weekly security recap", stamp(start)))
+        secnews.run(cfg, self.state, sender, now=start, fetcher=lambda u: empty, bootstrap_send=True)
+        secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=5), fetcher=lambda u: empty)
+        calls.clear()
+        hot = self.rss(("항공사 예약 사이트 해킹…371만건 개인정보 유출", stamp(start + timedelta(minutes=8))),
+                       ("항공사 회원 1,014명 개인정보 유출", stamp(start + timedelta(minutes=8))))
+        asked = []
+
+        def gemini(items, told=()):
+            asked.extend(it["title"] for it in items)
+            for it in items:
+                it["score"] = 3
+            return items
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=10), fetcher=lambda u: hot,
+                           classify=gemini)
+        self.assertEqual(asked, ["항공사 예약 사이트 해킹…371만건 개인정보 유출"])
+        self.assertEqual(len(sent), 1)
+        # Without Gemini a keyword-only guess about scale never goes out as an alert.
+        self.assertFalse(secnews.SCALE.search("항공사 회원 1,014명 개인정보 유출"))
+
     def test_instant_alert_is_silent_at_night(self):
         cfg, calls, sender = self.instant_setup()
         night = datetime(2026, 10, 17, 23, 0, tzinfo=secnews.KST)
