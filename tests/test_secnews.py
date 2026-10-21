@@ -539,6 +539,46 @@ class RunTests(unittest.TestCase):
         sent = secnews.run(cfg, self.state, sender, now=start + timedelta(hours=1), fetcher=lambda u: hot)
         self.assertEqual([i["title"] for i in sent], ["New ransomware report"])
 
+    def test_story_sent_as_ordinary_news_still_gets_its_alert_when_it_turns_urgent(self):
+        cfg, calls, sender = self.instant_setup()
+        start = datetime(2026, 10, 17, 10, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        notice = self.rss(("Airline booking platform schedules release for two critical vulnerabilities",
+                           stamp(start)))
+        sent = secnews.run(cfg, self.state, sender, now=start, fetcher=lambda u: notice, bootstrap_send=True)
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(secnews.load_state(self.state)["recent"][0][4])  # went out as ordinary news
+        secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=5), fetcher=lambda u: notice)
+        calls.clear()
+        later = self.rss(("Airline booking platform releases critical patches for two zero-day vulnerabilities",
+                          stamp(start + timedelta(minutes=8))))
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=10), fetcher=lambda u: later)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("긴급 보안 속보", calls[0][0])
+        # Once sent as urgent, another outlet's take on it is not sent again.
+        again = self.rss(("Airline booking platform patches two zero-day vulnerabilities, update now",
+                          stamp(start + timedelta(minutes=13))))
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=15), fetcher=lambda u: again)
+        self.assertEqual(sent, [])
+
+    def test_critical_word_in_the_headline_is_an_alert_candidate(self):
+        cfg, calls, sender = self.instant_setup()
+        start = datetime(2026, 10, 17, 10, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        empty = self.rss(("Weekly security recap", stamp(start)))
+        secnews.run(cfg, self.state, sender, now=start, fetcher=lambda u: empty, bootstrap_send=True)
+        secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=5), fetcher=lambda u: empty)
+        hot = self.rss(("Critical unauthenticated RCE flaw in airport kiosk software", stamp(start + timedelta(minutes=8))))
+        asked = []
+
+        def gemini(items, told=()):
+            asked.extend(it["title"] for it in items)
+            return []  # judged not urgent: nothing goes out now, the digest decides later
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=10), fetcher=lambda u: hot,
+                           classify=gemini)
+        self.assertEqual(asked, ["Critical unauthenticated RCE flaw in airport kiosk software"])
+        self.assertEqual(sent, [])
+
     def test_instant_alert_is_silent_at_night(self):
         cfg, calls, sender = self.instant_setup()
         night = datetime(2026, 10, 17, 23, 0, tzinfo=secnews.KST)

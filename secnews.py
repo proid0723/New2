@@ -1588,7 +1588,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     max_age = timedelta(hours=config.get("max_age_hours", 48))
     min_score = config.get("min_score", 0)
 
-    # Stories already sent in the last max_age_hours: [title, [CVEs], timestamp].
+    # Stories already sent in the last max_age_hours: [title, [CVEs], timestamp, story, sent as urgent].
     recent = [r for r in (state or {}).get("recent", []) if now.timestamp() - r[2] <= max_age.total_seconds()]
     sent_cves = {c for r in recent for c in r[1]}
 
@@ -1716,7 +1716,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         seen[key] = ts
     for tkey in fresh_titles:
         seen[tkey] = ts
-    recent += [[it["title"], sorted(item_cves(it)), ts, it.get("story", "")] for it in sent]
+    recent += [[it["title"], sorted(item_cves(it)), ts, it.get("story", ""), it["score"] >= 3] for it in sent]
 
     # A feed that keeps failing has probably moved or changed format; say so once.
     failures = {n: c + 1 for n, c in (state or {}).get("feed_failures", {}).items() if n in failed}
@@ -1843,7 +1843,10 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
     checked = dict(checked or {})
     max_age = timedelta(hours=config.get("max_age_hours", 48))
     recent = [r for r in state.get("recent", []) if now.timestamp() - r[2] <= max_age.total_seconds()]
-    sent_cves = {c for r in recent for c in r[1]}
+    # Only stories already sent as urgent block an alert: one that went out in a digest as ordinary
+    # news (say, a patch announced for next week) still gets its alert once it turns into a zero-day.
+    urgent_told = [r for r in recent if len(r) > 4 and r[4]]
+    sent_cves = {c for r in urgent_told for c in r[1]}
     scorer = Scorer(config.get("keywords", {}))
     fallback = config.get("fallback_sectors", {})
     tagger = SectorTagger(config.get("sectors", {}), fallback=fallback)
@@ -1863,8 +1866,11 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         checked[key] = ts  # judged once; a miss waits for the digest
         scorer.classify(item)
         text = f"{item['title']} {item.get('summary', '')}".lower()
-        signal = item["id"].startswith("kev:") or any(r.search(text) for r in strong)
-        if first or not signal or item["score"] < 3 or already_told(item, recent, sent_cves):
+        # A critical word in the headline (RCE, unauthenticated, CVSS 9…) is enough to ask Gemini,
+        # which applies the strict urgent rules.
+        signal = (item["id"].startswith("kev:") or any(r.search(text) for r in strong)
+                  or any(r.search(item["title"].lower()) for r in scorer.critical))
+        if first or not signal or item["score"] < 3 or already_told(item, urgent_told, sent_cves):
             continue
         tagger.tag(item)
         candidates.append((key, tkey, item))
@@ -1874,10 +1880,10 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         log("instant alerts: first check; current items recorded, nothing sent")
     elif candidates:
         items = [it for _, _, it in candidates]
-        titles = [it["title"] for it in items if not it["id"].startswith("kev:")] + [r[0] for r in recent]
+        titles = [it["title"] for it in items if not it["id"].startswith("kev:")] + [r[0] for r in urgent_told]
         items = [it for it in items if not kev_covered(it, titles)]
         if classify and items:
-            items = classify(items, [r[3] if len(r) > 3 and r[3] else r[0] for r in recent])
+            items = classify(items, [r[3] if len(r) > 3 and r[3] else r[0] for r in urgent_told])
         urgent = trim(sorted([it for it in items if it["score"] >= 3], key=lambda it: -it["score"]),
                       config.get("max_instant_per_run", 5))
         if urgent:
@@ -1892,12 +1898,14 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
             for key, tkey, it in candidates:
                 if it in urgent:
                     seen[key] = seen[tkey] = ts
-            recent += [[it["title"], sorted(item_cves(it)), ts, it.get("story", "")] for it in urgent]
+            recent += [[it["title"], sorted(item_cves(it)), ts, it.get("story", ""), True] for it in urgent]
             decisions = dict(state.get("decisions", {}))
             for it in urgent:
                 decisions[it.get("link") or title_key(it)] = ["sent", ts, it["title"][:120]]
             extra["decisions"] = decisions
-        log(f"instant alerts: {len(candidates)} candidate(s), sent {len(sent)}" + (" quietly" if sent and quiet(config, now) else ""))
+        dropped = sum(1 for _, _, it in candidates if it.get("drop_reason"))
+        log(f"instant alerts: {len(candidates)} candidate(s), sent {len(sent)}, {dropped} dropped by Gemini"
+            + (" quietly" if sent and quiet(config, now) else ""))
     checked = {k: t for k, t in checked.items() if ts - t <= 2 * 86400}
     save_state(state_path, seen, now, recent, state.get("feed_failures", {}),
                last_digest=state.get("last_digest"), instant_checked=checked, **extra)
