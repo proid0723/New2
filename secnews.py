@@ -1432,6 +1432,7 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
                 it["security_only"] = feed.get("security_only", False)
                 it["min_score"] = feed.get("min_score")
                 it["focus_only"] = feed.get("focus_only", False)
+                it["instant_all"] = feed.get("instant") == "all"
             log(f"{feed_label(feed, n)}: {len(got)} items")
             if counts is not None:
                 counts[str(n)] = len(got)
@@ -1868,9 +1869,14 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         text = f"{item['title']} {item.get('summary', '')}".lower()
         # A critical word in the headline (RCE, unauthenticated, CVSS 9…) is enough to ask Gemini,
         # which applies the strict urgent rules.
+        # A feed marked "instant": "all" (a narrow topic search) has every new item asked about.
         signal = (item["id"].startswith("kev:") or any(r.search(text) for r in strong)
                   or any(r.search(item["title"].lower()) for r in scorer.critical))
-        if first or not signal or item["score"] < 3 or already_told(item, urgent_told, sent_cves):
+        if item.get("instant_all") and classify:
+            signal = item["focus_security"] or item["security_hits"]
+        elif item["score"] < 3:
+            signal = False
+        if first or not signal or already_told(item, urgent_told, sent_cves):
             continue
         tagger.tag(item)
         candidates.append((key, tkey, item))

@@ -579,6 +579,29 @@ class RunTests(unittest.TestCase):
         self.assertEqual(asked, ["Critical unauthenticated RCE flaw in airport kiosk software"])
         self.assertEqual(sent, [])
 
+    def test_feed_marked_instant_all_has_every_security_item_judged(self):
+        cfg, calls, sender = self.instant_setup()
+        cfg["feeds"] = [{"name": "Topic search", "url": "fast", "instant": "all"}]
+        start = datetime(2026, 10, 17, 10, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        empty = self.rss(("Weekly security recap", stamp(start)))
+        secnews.run(cfg, self.state, sender, now=start, fetcher=lambda u: empty, bootstrap_send=True)
+        secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=5), fetcher=lambda u: empty)
+        calls.clear()
+        new = self.rss(("공항 관제 시스템 해킹 피해 확인", stamp(start + timedelta(minutes=8))),
+                       ("공항 개항 기념 행사 열려", stamp(start + timedelta(minutes=8))))
+        asked = []
+
+        def gemini(items, told=()):
+            asked.extend(it["title"] for it in items)
+            for it in items:
+                it["score"] = 3  # Gemini: urgent
+            return items
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=10), fetcher=lambda u: new,
+                           classify=gemini)
+        self.assertEqual(asked, ["공항 관제 시스템 해킹 피해 확인"])  # no security word, not asked
+        self.assertEqual([i["title"] for i in sent], ["공항 관제 시스템 해킹 피해 확인"])
+
     def test_instant_alert_is_silent_at_night(self):
         cfg, calls, sender = self.instant_setup()
         night = datetime(2026, 10, 17, 23, 0, tzinfo=secnews.KST)
