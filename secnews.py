@@ -1464,6 +1464,13 @@ def item_cves(item):
     return {c.upper() for c in CVE_RE.findall(f"{item['title']} {item.get('summary', '')}")}
 
 
+def told_line(record):
+    """A sent story as Gemini sees it: the headline as it went out, plus the English story
+    line when there is one, so a Korean follow-up can be matched against either."""
+    title, story = record[0], (record[3] if len(record) > 3 else "")
+    return f"{title} ({story})" if story else title
+
+
 def already_told(item, recent, sent_cves):
     """A story sent in an earlier digest, now from another outlet (or the KEV entry for it):
     every CVE it names went out already, or its headline matches one that did."""
@@ -1657,7 +1664,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     passed = len(news)
     if classify and news:
         # Gemini also spots stories sent in an earlier digest, across languages.
-        kept = classify(news, [r[3] if len(r) > 3 and r[3] else r[0] for r in recent])
+        kept = classify(news, [told_line(r) for r in recent])
         # Gemini overloaded (it happens around 06:00 KST, US afternoon): the digest waits for the
         # next 5-minute run rather than going out with keyword categories and machine translation.
         # From half past the hour it goes out anyway.
@@ -1898,7 +1905,7 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         titles = [it["title"] for it in items if not it["id"].startswith("kev:")] + [r[0] for r in urgent_told]
         items = [it for it in items if not kev_covered(it, titles)]
         if classify and items:
-            items = classify(items, [r[3] if len(r) > 3 and r[3] else r[0] for r in urgent_told])
+            items = classify(items, [told_line(r) for r in urgent_told])
         urgent = trim(sorted([it for it in items if it["score"] >= 3], key=lambda it: -it["score"]),
                       config.get("max_instant_per_run", 5))
         if urgent:

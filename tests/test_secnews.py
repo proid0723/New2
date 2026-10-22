@@ -466,7 +466,7 @@ class RunTests(unittest.TestCase):
         titles = [i["title"] for i in sent]
         self.assertEqual(len(titles), 1)  # one Burger King report; BeyondTrust went out last hour
         self.assertTrue("Burger" in titles[0] or "버거킹" in titles[0])
-        self.assertEqual(seen_told[1], ["beyondtrust zero-day exploited"])
+        self.assertEqual(seen_told[1], ["Zero-day actively exploited in BeyondTrust (beyondtrust zero-day exploited)"])
 
     def test_gemini_classification_failure_keeps_keyword_results(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
