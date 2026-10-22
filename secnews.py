@@ -912,11 +912,13 @@ def localize(items, translate):
     for item in items:
         title, summary = item["title"], short_summary(item)
         if not item.get("no_translate") and (item.get("title_ko") or item.get("summary_ko")):
+            # Gemini sometimes "translates" Korean text too; only a real translation is marked.
             if needs_translation(title) and item.get("title_ko"):
                 title = item["title_ko"]
+                item["translated"] = True
             if summary and needs_translation(summary) and item.get("summary_ko"):
                 summary = item["summary_ko"]
-            item["translated"] = True
+                item["translated"] = True
         todo = [needs_translation(title), bool(summary) and needs_translation(summary)]
         if translate and not item.get("no_translate") and any(todo):
             try:
@@ -1464,8 +1466,8 @@ def item_cves(item):
 
 def already_told(item, recent, sent_cves):
     """A story sent in an earlier digest, now from another outlet (or the KEV entry for it):
-    every CVE in its headline went out already, or its headline matches one that did."""
-    cves = {c.upper() for c in CVE_RE.findall(item["title"])}
+    every CVE it names went out already, or its headline matches one that did."""
+    cves = item_cves(item)
     if cves and cves <= sent_cves:
         return True
     return any(similar(item["title"], r[0]) for r in recent)
@@ -1495,7 +1497,7 @@ def trim(items, max_items, max_per_source=0):
     then cap the count. Items are expected best-first; whatever is dropped is still marked as seen."""
     kept, covered, per_source = [], set(), {}
     for item in items:
-        cves = {c.upper() for c in CVE_RE.findall(item["title"])}
+        cves = item_cves(item)  # summaries name the CVE when the headline only says "PHP flaw"
         if cves and cves <= covered:
             continue
         if max_per_source and per_source.get(item.get("source"), 0) >= max_per_source:

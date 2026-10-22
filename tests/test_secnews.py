@@ -882,6 +882,20 @@ class LocalizeTests(unittest.TestCase):
         self.assertEqual(calls["google"], ["Zero-day exploited"])
         self.assertEqual(items[0]["display_title"], "구글:Zero-day exploited")
 
+    def test_korean_item_is_not_marked_as_translated(self):
+        it = {"title": "[단독] 공항 관제망 사이버공격 5년간 7.5만건", "summary": "", "link": "https://e/k",
+              "title_ko": "Airport control network cyberattacks: 75,000 in five years", "summary_ko": ""}
+        secnews.localize([it], None)
+        self.assertEqual(it["display_title"], "[단독] 공항 관제망 사이버공격 5년간 7.5만건")
+        self.assertFalse(it.get("translated"))
+
+    def test_cve_named_only_in_the_summary_is_one_story(self):
+        items = [{"title": "Critical airline booking engine flaw patched", "summary": "CVE-2026-1111 allows RCE.",
+                  "source": "A"},
+                 {"title": "Vendor says its firewall blocks the booking engine bug", "summary": "Covers CVE-2026-1111.",
+                  "source": "B"}]
+        self.assertEqual([i["source"] for i in secnews.trim(items, 10)], ["A"])
+
     def test_english_is_translated_and_link_kept(self):
         it = self.item("Hackers hit airport networks", "Attackers breached several systems used by the airport this week.")
         secnews.localize([it], lambda t: "번역:" + t)
