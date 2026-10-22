@@ -1646,7 +1646,8 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     for it in (it for _, it in fresh if not it.get("ransomware")):
         if it["score"] < (it.get("min_score") or min_score):
             decide(it, "score")
-        elif it["security_only"] and not it["security_hits"]:
+        # A focus story with its own security angle (focus_security words) counts as security news.
+        elif it["security_only"] and not it["security_hits"] and not (it.get("focus") and it.get("focus_security")):
             decide(it, "nosec")
         elif it.get("focus_only") and not it.get("focus"):
             decide(it, "focus_only")

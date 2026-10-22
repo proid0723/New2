@@ -367,6 +367,14 @@ class RunTests(unittest.TestCase):
                            fetcher=lambda u: later)
         self.assertEqual([i["title"] for i in sent], ["Burger King Japan data breach exposes customer records"])
 
+    def test_focus_story_with_its_own_security_angle_passes_a_security_only_feed(self):
+        cfg = dict(CONFIG, feeds=[{"name": "Wire", "url": "w", "security_only": True}])
+        cfg["keywords"] = dict(CONFIG["keywords"], focus_security=list(CONFIG["keywords"].get("focus_security", [])) + ["출입금지"])
+        d = "Wed, 15 Oct 2026 01:00:00 +0000"
+        feed = self.rss(("공항, 외국산 카메라 차량 출입금지", d), ("공항 개항 기념 행사 열려", d))
+        sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
+        self.assertEqual([i["title"] for i in sent], ["공항, 외국산 카메라 차량 출입금지"])
+
     def test_focus_news_without_a_security_angle_is_left_out(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
         d = "Wed, 15 Oct 2026 01:00:00 +0000"
