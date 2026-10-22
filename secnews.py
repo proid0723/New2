@@ -48,7 +48,7 @@ TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 # Actions logs of a public repository are public. There a run prints only warnings, errors and a
 # short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
 QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
-SUMMARY = re.compile(r"^(warning|error|sent \d|subscribers:|instant alerts:|night notice|\d+ recipient)")
+SUMMARY = re.compile(r"^(warning|error|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
 HELD = []
 
 
@@ -1814,7 +1814,7 @@ def explain(state, query):
 REVIEW_LIMIT = 6000
 
 
-def write_review(folder, stats, now):
+def write_review(folder, stats, now, name=None):
     """The week's decisions as a file the workflow commits to the private settings repo, where the
     weekly review reads them. Feeds appear by number, as in the logs; the settings name them."""
     local = now.astimezone(KST)
@@ -1825,7 +1825,7 @@ def write_review(folder, stats, now):
             "fields": ["reason", "title", "source", "focus", "category"],
             "items": list(stats.get("review", {}).values())}
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{local:%G-W%V}.json").write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+    (folder / (name or f"{local:%G-W%V}.json")).write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def weekly_report(config, stats, now):
@@ -1973,6 +1973,8 @@ def main(argv=None):
     ap.add_argument("--config", type=Path, default=Path(os.environ.get("SECNEWS_CONFIG") or CONFIG_PATH))
     ap.add_argument("--backup-subscribers", type=Path, metavar="FILE",
                     help="copy the encrypted subscriber list to FILE if it changed; prints changed/unchanged")
+    ap.add_argument("--write-review", action="store_true",
+                    help="write this week's decisions so far for review (nothing is sent or changed)")
     args = ap.parse_args(argv)
 
     if args.backup_subscribers:
@@ -1984,6 +1986,12 @@ def main(argv=None):
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
     state_path = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()
+    if args.write_review:
+        now = datetime.now(timezone.utc)
+        stats = (load_state(state_path) or {}).get("stats") or {}
+        write_review(state_path.parent / "reviews", stats, now, f"snapshot-{now.astimezone(KST):%Y-%m-%d-%H%M}.json")
+        log(f"review snapshot: {len(stats.get('review', {}))} items")
+        return 0
     translator = make_translator(config)
     global GEMINI_BUDGET
     GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),

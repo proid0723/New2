@@ -1,8 +1,10 @@
+import os
 import base64
 import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -340,6 +342,18 @@ class RunTests(unittest.TestCase):
         self.assertEqual(review["numbers"]["sent"], 1)
         self.assertEqual(review["items"], [["sent", "Zero-day actively exploited in router", "F", False, ""]])
         self.assertEqual(secnews.load_state(self.state)["stats"]["review"], {})  # a new week starts empty
+
+    def test_review_snapshot_writes_the_week_so_far_and_sends_nothing(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
+        d = "Wed, 15 Oct 2026 01:00:00 +0000"
+        secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: self.rss(("Zero-day actively exploited in router", d)),
+                    bootstrap_send=True)
+        before = self.state.read_text("utf-8")
+        with mock.patch.dict(os.environ, {"SECNEWS_STATE": str(self.state)}):
+            secnews.main(["--write-review", "--config", str(Path(__file__).with_name("test_feeds.json"))])
+        (snap,) = (self.state.parent / "reviews").glob("snapshot-*.json")
+        self.assertEqual(json.loads(snap.read_text("utf-8"))["items"][0][1], "Zero-day actively exploited in router")
+        self.assertEqual(self.state.read_text("utf-8"), before)
 
     def test_story_sent_earlier_is_not_sent_again_from_another_outlet(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])

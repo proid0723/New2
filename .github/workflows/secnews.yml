@@ -32,6 +32,10 @@ on:
         description: 'Print the full log (normally only a summary; the full log is printed when a run fails)'
         type: boolean
         default: false
+      review_now:
+        description: 'Only copy this week''s decisions so far to New2_config/reports for review (no news is sent; untick test_me too)'
+        type: boolean
+        default: false
   push:
     branches: ['**']
   pull_request:
@@ -109,6 +113,7 @@ jobs:
           RESET_FLAG: ${{ inputs.reset && '--reset' || '' }}
           SECNEWS_VERBOSE: ${{ inputs.verbose && '1' || '' }}
           TIMER_RUN: ${{ github.event_name == 'schedule' || inputs.scheduled }}
+          REVIEW_NOW: ${{ inputs.review_now && !inputs.scheduled }}
         # Timer runs (GitHub schedule or the external ping) wait for the hourly digest, and a run
         # with no saved state only records the current news. Manual runs send now.
         run: |
@@ -119,7 +124,9 @@ jobs:
             echo "::error::No settings: feeds.json is not in New2_config (or CONFIG_REPO_TOKEN is missing or expired)."
             exit 1
           fi
-          if [ "$TEST_ME" = "true" ]; then
+          if [ "$REVIEW_NOW" = "true" ]; then
+            python3 secnews.py --write-review
+          elif [ "$TEST_ME" = "true" ]; then
             if [ -z "$(echo "$TEST_CHAT" | tr -d '[:space:]')" ]; then
               echo "::error::The TELEGRAM_TEST_CHAT_ID secret is empty or missing (Settings > Secrets and variables > Actions > Secrets). A test never goes to subscribers."
               exit 1
