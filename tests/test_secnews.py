@@ -1568,7 +1568,9 @@ class SubscriberTests(unittest.TestCase):
         secnews.telegram_get_updates = lambda *a, **k: self.fail("test mode must not read updates")
         os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", SECNEWS_STATE=str(state), SECNEWS_ONLY_CHATS="999")
         try:
-            secnews.main(["--config", str(Path(__file__).with_name("test_feeds.json"))])
+            # This verifies recipient/state isolation, independent of live translation services.
+            with mock.patch.object(secnews, "make_translator", return_value=None):
+                secnews.main(["--config", str(Path(__file__).with_name("test_feeds.json"))])
         finally:
             secnews.collect, secnews.telegram_send, secnews.telegram_get_updates = saved[:3]
             os.environ.clear()
