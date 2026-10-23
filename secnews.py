@@ -552,12 +552,13 @@ ITEM_STYLE = "plain"  # "quote": each article in its own quote box (feeds.json "
 
 
 def model_tag(model):
-    """Compact AI mark for the boxed layout: "3.8" for Gemini 3.8 Flash, "3.5L" for 3.5 Flash Lite."""
+    """Compact AI mark for the boxed layout: the version alone ("3.8", "3.5"). Each version in use is
+    either a Flash or a Flash Lite model, so the number is enough."""
     label = model_label(model)
     m = re.search(r"\d+(\.\d+)?", label)
     if not m:
         return label
-    return m.group(0) + ("L" if "Lite" in label else "")
+    return m.group(0)
 
 
 def format_item(item, hide_sector=None, key="sectors"):
@@ -579,9 +580,9 @@ def format_item(item, hide_sector=None, key="sectors"):
             lines.append(html.escape(summary))
         meta = f"📰 {source}" + (f" · {when}" if when else "") + (" · 🌐 번역" if item.get("translated") else "")
         if item.get("ai_model"):
-            meta += f" · 🤖{model_tag(item['ai_model'])}"
+            meta += f" · 🤖 {model_tag(item['ai_model'])}"
         elif item.get("keyword_only"):
-            meta += " · 🔑키워드"
+            meta += " · 🔑 키워드"
         lines.append(meta)
         return "<blockquote>" + "\n".join(lines) + "</blockquote>"
     if summary:
