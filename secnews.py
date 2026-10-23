@@ -789,6 +789,13 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 time.sleep(3)
                 continue
             raise
+        except (TimeoutError, urllib.error.URLError, OSError) as e:
+            # No answer in time (an overloaded model can sit on a request): ask another model.
+            if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
+                log(f"warning: Gemini {model}: {e}; trying another model")
+                busy.add(model)
+                continue
+            raise
         # The exact model behind an alias such as gemini-flash-latest, for the article's AI mark.
         gemini_json.last_model = data.get("modelVersion") or model
         log(f"Gemini request answered by {gemini_json.last_model}")

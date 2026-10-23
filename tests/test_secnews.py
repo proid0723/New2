@@ -1368,6 +1368,23 @@ class SubscriberTests(unittest.TestCase):
 
 
 class GeminiRetryTests(unittest.TestCase):
+    def test_a_model_that_times_out_hands_the_request_to_another(self):
+        import io
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json", [("a", 5), ("b", 5)])
+
+        def fake(req, timeout=0):
+            if "/models/a:" in req.full_url:
+                raise TimeoutError("The read operation timed out")
+            return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": "[2]"}]}}]}).encode())
+        saved = secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen
+        secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen = budget, fake
+        try:
+            self.assertEqual(secnews.gemini_json("p", "k"), [2])
+        finally:
+            secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen = saved
+
     def test_per_minute_limits_everywhere_never_retire_a_model_for_the_day(self):
         import io
         import urllib.error
