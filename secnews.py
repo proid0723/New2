@@ -493,7 +493,7 @@ def load_state(path):
 
 
 # Bookkeeping that only some runs update; save_state keeps the stored copy when a run passes none.
-KEPT_STATE = ("night_notice", "decisions", "stats", "report_week", "deferred_hour", "deferred_tries")
+KEPT_STATE = ("night_notice", "decisions", "stats", "report_week", "deferred_hour", "deferred_tries", "prejudged")
 
 
 def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=None, instant_checked=None,
@@ -897,6 +897,11 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
     return [by_i[n] for n in range(len(items))]
 
 
+def cache_key(item):
+    """The pre-judging cache's key: the item's usual key, or its title for bare test items."""
+    return item_key(item) if item.get("id") is not None else item.get("title", "")
+
+
 class GeminiClassifier:
     """Second opinion on the keyword filter: Gemini drops off-topic items and sets focus,
     urgency and sector. Keyword results stay for anything Gemini could not judge."""
@@ -905,6 +910,9 @@ class GeminiClassifier:
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
         self.lite_first = False  # True would send this classifier's requests to the Lite models first
         self.deadline = 420  # seconds for all requests of one run; the job is stopped after 25 minutes
+        # Verdicts from the half-past pre-judging run, by item key: [Gemini's answer, model]. Items
+        # found here are not asked again; every verdict of this call ends up in results.
+        self.cache, self.results = {}, {}
         self.sectors = list(config.get("sectors", {})) + list(config.get("fallback_sectors", {}))
         self.focus_sectors = list(config.get("focus_sectors", {}))
         self.instructions = config.get("classify_prompt")
@@ -919,6 +927,22 @@ class GeminiClassifier:
         # must not fill the places of judged ones it turned down.
         head = items[:self.limit]
         told = list(told)
+
+        def remember(it, r, answered):
+            judged[id(it)] = r
+            it["ai_model"] = answered
+            self.results[cache_key(it)] = [r, answered]
+            # Later requests see this round's stories too: Gemini compares items only within
+            # one request, so the same event split across two requests went out twice.
+            if r.get("relevant") and not (r.get("duplicate") or r.get("already_sent")):
+                story = r.get("story") if isinstance(r.get("story"), str) else ""
+                told.append(f"{it['title']} ({story.strip()})" if story.strip() else it["title"])
+
+        for it in head:
+            hit = self.cache.get(cache_key(it))
+            if isinstance(hit, list) and len(hit) == 2 and isinstance(hit[0], dict):
+                remember(it, dict(hit[0]), hit[1])
+        head = [it for it in head if id(it) not in judged]
         started = time.monotonic()
         for i in range(0, len(head), self.chunk):
             part = head[i:i + self.chunk]
@@ -937,13 +961,7 @@ class GeminiClassifier:
                 answered = getattr(gemini_json, "last_model", None) or self.model
                 models.append(answered)
                 for it, r in zip(part, results):
-                    judged[id(it)] = r
-                    it["ai_model"] = answered
-                    # Later requests see this round's stories too: Gemini compares items only within
-                    # one request, so the same event split across two requests went out twice.
-                    if r.get("relevant") and not (r.get("duplicate") or r.get("already_sent")):
-                        story = r.get("story") if isinstance(r.get("story"), str) else ""
-                        told.append(f"{it['title']} ({story.strip()})" if story.strip() else it["title"])
+                    remember(it, r, answered)
             except Exception as e:
                 log(f"warning: Gemini classification failed ({e}); keeping keyword results")
                 failed = self.failed = True
@@ -1716,7 +1734,7 @@ FEED_ALERT_AFTER = 3  # digests in a row a feed may fail before the owner hears 
 
 
 def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=False, translate=None, force=False,
-        classify=None, alert=None):
+        classify=None, alert=None, prejudge=False):
     """Collect, filter and send. Returns the list of sent items.
 
     sender(text) must return True when at least one chat received the text."""
@@ -1726,6 +1744,16 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     # This hour's digest was given up for an unavailable Gemini: its news waits for the next one.
     gave_up = (state or {}).get("deferred_hour") == hour and (state or {}).get("deferred_tries", 0) >= 2
     if not force and (gave_up or not due(state, config, now)):
+        # Half past the hour: Gemini judges what is in so far, so the digest on the hour only asks about
+        # the last half hour's news (Gemini is often overloaded right on the hour, US/EU working time).
+        upcoming = f"{(now + timedelta(minutes=30)).astimezone(KST):%Y-%m-%d %H}"
+        if (classify is not None and hasattr(classify, "cache") and state is not None
+                and config.get("prejudge", True) and 30 <= now.astimezone(KST).minute < 35
+                and not quiet(config, now + timedelta(minutes=30))
+                and (state.get("prejudged") or {}).get("for") != upcoming):
+            run(config, state_path, sender, now, fetcher, translate=translate, force=True, classify=classify,
+                prejudge=upcoming)
+            state = load_state(state_path)
         if quiet(config, now):
             log(f"quiet hours: next digest at {config['quiet_hours'][1]:02d}:00 KST")
             night_notice(config, state, state_path, sender, now)
@@ -1811,14 +1839,34 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         news.remove(it)
     news.sort(key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
     passed = len(news)
+    held = []  # items Gemini could not judge in a digest that goes out anyway: kept for the next one
     if classify and news:
+        pre = (state or {}).get("prejudged") or {}
+        if hasattr(classify, "cache") and not prejudge and pre.get("for") == hour:
+            classify.cache = pre.get("items") or {}
         # Gemini also spots stories sent in an earlier digest, across languages.
         kept = classify(news, [told_line(r) for r in recent])
+        if prejudge:
+            stored = dict(load_state(state_path) or state or {},
+                          prejudged={"for": prejudge, "items": dict(getattr(classify, "results", {}))})
+            state_path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+            log(f"pre-judged {len(stored['prejudged']['items'])} item(s) for the {prejudge[-2:]}:00 digest")
+            return []
         # Gemini unavailable (overloaded, timing out): nothing goes out on keyword judgement alone.
         # The digest tries once more five minutes later; if that fails too, this hour is skipped
         # and its news, still unsent, goes out with the next hour's digest. The admin hears why.
-        if getattr(classify, "failed", False) and not force:
-            tries = (state or {}).get("deferred_tries", 0) + 1 if (state or {}).get("deferred_hour") == hour else 1
+        judged_any = any(not it.get("keyword_only") for it in kept)
+        tries = ((state or {}).get("deferred_tries", 0) + 1 if (state or {}).get("deferred_hour") == hour else 1)
+        if getattr(classify, "failed", False) and not force and tries >= 2 and judged_any:
+            # Second failure, but the half-past run judged part of the news: that part goes out now,
+            # the rest (never judged) waits for the next digest.
+            held = [it for it in kept if it.get("keyword_only")]
+            kept = [it for it in kept if not it.get("keyword_only")]
+            log(f"warning: Gemini is unavailable; sending {len(kept)} pre-judged item(s), holding {len(held)}")
+            if alert:
+                alert(f"⏳ {now.astimezone(KST).hour}시 정기 발송: AI 응답이 늦어 미리 판단해 둔 기사만 보내고, "
+                      f"나머지 {len(held)}건은 다음 정기 발송에 함께 보내요.")
+        elif getattr(classify, "failed", False) and not force:
             log(f"warning: Gemini is unavailable; digest attempt {tries} put off")
             stored = dict(load_state(state_path) or state or {}, deferred_hour=hour, deferred_tries=tries)
             state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1829,7 +1877,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
                       f"⏳ {h}시 정기 발송: AI가 계속 응답하지 않아 이번 기사는 다음 정기 발송에 함께 보내요.")
             return []
         for it in news:
-            if it not in kept:
+            if it not in kept and it not in held:
                 decide(it, it.get("drop_reason", "gemini_irrelevant"))
         news = sorted(kept, key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
     # The 06:00 round-up carries the whole night, so its caps are larger.
@@ -1892,10 +1940,13 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         elif not sender(text, silent=True):
             log("warning: the no-news notice was not delivered")
 
+    holding = {item_key(it) for it in held} | {title_key(it) for it in held}
     for key, _ in fresh:
-        seen[key] = ts
+        if key not in holding:
+            seen[key] = ts
     for tkey in fresh_titles:
-        seen[tkey] = ts
+        if tkey not in holding:
+            seen[tkey] = ts
     recent += [[it["title"], sorted(item_cves(it)), ts, it.get("story", ""), it["score"] >= 3] for it in sent]
 
     # A feed that keeps failing has probably moved or changed format; say so once.

@@ -473,6 +473,63 @@ class RunTests(unittest.TestCase):
                            fetcher=lambda u: feed, classify=lambda items, told=(): items)
         self.assertEqual(len(sent), 1)
 
+    def test_half_past_prejudging_halves_the_work_on_the_hour(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], digest_on_the_hour=True)
+        top = datetime(2026, 10, 17, 11, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        secnews.run(cfg, self.state, self.sender, now=top - timedelta(hours=1), fetcher=lambda u: self.rss(),
+                    bootstrap_send=True)
+        early = ("Zero-day actively exploited in router", stamp(top - timedelta(minutes=40)))
+        late = ("Airline booking system breach exposes customers", stamp(top - timedelta(minutes=10)))
+        asked = []
+
+        def fake(part, *a):
+            asked.append([it["title"] for it in part])
+            return [dict(relevant=True, focus=False, urgent=False, story=it["title"].lower()) for it in part]
+        saved = secnews.gemini_classify
+        secnews.gemini_classify = fake
+        try:
+            classify = secnews.GeminiClassifier("k", cfg)
+            secnews.run(cfg, self.state, self.sender, now=top - timedelta(minutes=29), fetcher=lambda u: self.rss(early),
+                        classify=classify)
+            self.assertEqual(asked, [["Zero-day actively exploited in router"]])  # judged at half past
+            self.assertEqual(self.sent, [])  # nothing sent then
+            classify = secnews.GeminiClassifier("k", cfg)  # the next run is a new process
+            sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=1),
+                               fetcher=lambda u: self.rss(early, late), classify=classify)
+        finally:
+            secnews.gemini_classify = saved
+        self.assertEqual(asked[1:], [["Airline booking system breach exposes customers"]])  # only the new one
+        self.assertEqual(len(sent), 2)
+
+    def test_prejudged_news_goes_out_when_gemini_fails_on_the_hour(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], digest_on_the_hour=True)
+        top = datetime(2026, 10, 17, 11, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        secnews.run(cfg, self.state, self.sender, now=top - timedelta(hours=1), fetcher=lambda u: self.rss(),
+                    bootstrap_send=True)
+        early = ("Zero-day actively exploited in router", stamp(top - timedelta(minutes=40)))
+        late = ("Airline booking system breach exposes customers", stamp(top - timedelta(minutes=10)))
+        saved = secnews.gemini_classify
+        secnews.gemini_classify = lambda part, *a: [dict(relevant=True, focus=False, urgent=False) for _ in part]
+        try:
+            secnews.run(cfg, self.state, self.sender, now=top - timedelta(minutes=29), fetcher=lambda u: self.rss(early),
+                        classify=secnews.GeminiClassifier("k", cfg))
+            secnews.gemini_classify = lambda *a: (_ for _ in ()).throw(OSError("503"))
+            alerts = []
+            for minute in (1, 6):
+                sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=minute),
+                                   fetcher=lambda u: self.rss(early, late), alert=alerts.append,
+                                   classify=secnews.GeminiClassifier("k", cfg))
+            self.assertEqual([i["title"] for i in sent], ["Zero-day actively exploited in router"])
+            self.assertIn("미리 판단해 둔 기사만", alerts[-1])
+            secnews.gemini_classify = lambda part, *a: [dict(relevant=True, focus=False, urgent=False) for _ in part]
+            sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(hours=1, minutes=1),
+                               fetcher=lambda u: self.rss(early, late), classify=secnews.GeminiClassifier("k", cfg))
+        finally:
+            secnews.gemini_classify = saved
+        self.assertEqual([i["title"] for i in sent], ["Airline booking system breach exposes customers"])  # held one
+
     def test_admin_hears_when_a_digest_has_nothing_to_send(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], no_news_notice="admin")
         secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: self.rss(), bootstrap_send=True)
