@@ -554,9 +554,9 @@ def format_item(item, hide_sector=None, key="sectors"):
     if item.get("translated"):
         # No link to Google's translated copy: its proxy (translate.goog) is blocked in Korea.
         meta += " · 🌐 영문 기사 (제목·요약 번역)"
-    if item.get("ai_model"):
-        meta += f" · 🤖 {model_label(item['ai_model'])}"
     lines.append(meta)
+    if item.get("ai_model"):
+        lines.append(f"🤖 {model_label(item['ai_model'])}")
     return "\n".join(lines)
 
 
