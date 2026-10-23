@@ -581,10 +581,6 @@ def model_badge(model):
     return "✦" + model_tag(model)
 
 
-TITLE_TAP_PAD = "\u2800" * 4  # a small linked margin after the title (boxed layout)
-TAP_PAD = "\u2800" * 22  # linked blank line below the title; width depends on the client
-
-
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
     title = html.escape(item.get("display_title", item["title"]))
@@ -600,16 +596,9 @@ def format_item(item, hide_sector=None, key="sectors"):
         # the summary is plain text inside it and the details share one line. The box sets articles
         # apart, so the bullet goes.
         head = f"{mark}{tags}<b>{title}</b>"
-        if item["link"]:
-            # Extend the same link slightly to the right and onto the blank line below it.
-            # Braille blanks survive space trimming. Keep the trailing margin short to limit
-            # wrapping; Telegram controls the actual layout and tap area on each device.
-            pad = html.escape(item.get("display_title", item["title"])) + TITLE_TAP_PAD + "\n" + TAP_PAD
-            head = f'{mark}{tags}<b><a href="{html.escape(item["link"], quote=True)}">{pad}</a></b>'
         lines = [head]
         if summary:
-            if not item["link"]:
-                lines.append("")
+            lines.append("")
             lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
             lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")

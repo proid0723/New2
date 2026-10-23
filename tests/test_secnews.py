@@ -1112,7 +1112,8 @@ class LocalizeTests(unittest.TestCase):
         self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
         self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
         self.assertIn("📰 S · ✦2.5</blockquote>", out)  # the AI mark ends the details line
-        self.assertIn("Airline breach" + secnews.TITLE_TAP_PAD + "\n" + secnews.TAP_PAD + "</a></b>\n<i>Booking details of customers were exposed.</i>\n\n📰 S", out)  # keep the linked right margin and blank line; separate summary from source
+        self.assertIn('<b><a href="https://e/x">Airline breach</a></b>\n\n<i>Booking details of customers were exposed.</i>\n\n📰 S', out)
+        self.assertNotIn("\u2800", out)  # the title link contains no invisible tap-area padding
         self.assertNotIn("🤖", out)
         self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "✦3.5L")
 
