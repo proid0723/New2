@@ -18,6 +18,9 @@ def main():
     raw = secnews.fetch(feed["url"])
     parser = secnews.PARSERS.get(feed.get("type"), secnews.parse_feed)
     items = parser(raw, feed["name"])
+    sent_links = {}
+    for snapshot in sorted((private / "reports").glob("snapshot-*.json")):
+        sent_links.update(json.loads(snapshot.read_text()).get("sent_links", {}))
     output = {"checked_at": datetime.now(timezone.utc).isoformat(), "articles": []}
     original = secnews.urllib.request.urlopen
 
@@ -25,6 +28,9 @@ def main():
         item = next((i for i in items if i["title"] == title), None)
         row = {"title": title, "found_in_feed": item is not None, "requests": []}
         output["articles"].append(row)
+        if not item and title in sent_links:
+            item = {"title": title, "link": sent_links[title]}
+            row["from_sent_snapshot"] = True
         if not item:
             continue
         row["link"] = item["link"]
