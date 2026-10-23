@@ -456,6 +456,29 @@ class RunTests(unittest.TestCase):
         finally:
             secnews.gemini_classify = saved
 
+    def test_later_requests_see_stories_kept_by_earlier_ones(self):
+        items = [dict(title=f"Airline breach {n}", summary="", score=2, focus=False) for n in range(3)]
+        seen = []
+
+        def fake(part, key, model, sectors, fsectors, told=(), *rest):
+            seen.append(list(told))
+            return [dict(relevant=True, focus=False, urgent=False, story=f"airline {it['title'][-1]} breach")
+                    for it in part]
+        saved = secnews.gemini_classify
+        secnews.gemini_classify = fake
+        try:
+            secnews.GeminiClassifier("k", CONFIG, chunk=2)(items, ["Old story"])
+        finally:
+            secnews.gemini_classify = saved
+        self.assertEqual(seen[0], ["Old story"])
+        self.assertEqual(seen[1], ["Old story", "Airline breach 0 (airline 0 breach)", "Airline breach 1 (airline 1 breach)"])
+
+    def test_same_story_lines_are_one_story(self):
+        self.assertTrue(secnews.same_story({"story": "gitlab cvss 10 rce flaw patched"},
+                                           {"story": "gitlab critical rce vulnerability patched"}))
+        self.assertFalse(secnews.same_story({"story": "capcom account data breach"},
+                                            {"story": "nol universe data breach"}))
+
     def test_items_past_the_gemini_limit_are_dropped_unless_gemini_failed(self):
         items = [dict(title=f"Airline breach {n}", summary="", score=2, focus=False) for n in range(3)]
         saved = secnews.gemini_classify

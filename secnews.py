@@ -884,6 +884,7 @@ class GeminiClassifier:
         # far more often). The rest are dropped unless Gemini failed: unjudged low-ranked items
         # must not fill the places of judged ones it turned down.
         head = items[:self.limit]
+        told = list(told)
         for i in range(0, len(head), self.chunk):
             part = head[i:i + self.chunk]
             try:
@@ -898,6 +899,11 @@ class GeminiClassifier:
                 for it, r in zip(part, results):
                     judged[id(it)] = r
                     it["ai_model"] = answered
+                    # Later requests see this round's stories too: Gemini compares items only within
+                    # one request, so the same event split across two requests went out twice.
+                    if r.get("relevant") and not (r.get("duplicate") or r.get("already_sent")):
+                        story = r.get("story") if isinstance(r.get("story"), str) else ""
+                        told.append(f"{it['title']} ({story.strip()})" if story.strip() else it["title"])
             except Exception as e:
                 log(f"warning: Gemini classification failed ({e}); keeping keyword results")
                 failed = self.failed = True
@@ -1572,6 +1578,20 @@ def kev_covered(item, titles):
     return any(vendor in t.lower() and EXPLOIT_WORDS.search(t) for t in titles)
 
 
+STORY_FILLER = {"a", "an", "the", "of", "in", "on", "to", "for", "and", "by", "with", "from", "after", "new",
+                "flaw", "flaws", "bug", "vulnerability", "vulnerabilities", "patch", "patched", "patches",
+                "fix", "fixed", "critical", "attack", "attacks", "data", "breach", "leak", "hack", "hacked"}
+
+
+def same_story(a, b):
+    """Gemini's story lines ("gitlab cvss 10 rce patch", "gitlab maximum severity rce") name the same
+    thing: most of the shorter one's telling words appear in the other."""
+    words = [set(w for w in re.findall(r"[a-z0-9.\-]+", (x.get("story") or "").lower()) if w not in STORY_FILLER)
+             for x in (a, b)]
+    short, other = sorted(words, key=len)
+    return len(short) >= 2 and len(short & other) / len(short) >= 0.6
+
+
 def trim(items, max_items, max_per_source=0):
     """Drop stories about a CVE already covered by a higher-ranked item, keep at most
     max_per_source items from any one source so a busy channel cannot fill the digest,
@@ -1583,7 +1603,7 @@ def trim(items, max_items, max_per_source=0):
             continue
         if max_per_source and per_source.get(item.get("source"), 0) >= max_per_source:
             continue
-        if any(similar(item["title"], k["title"]) for k in kept):
+        if any(similar(item["title"], k["title"]) or same_story(item, k) for k in kept):
             continue
         covered |= cves
         per_source[item.get("source")] = per_source.get(item.get("source"), 0) + 1
