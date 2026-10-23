@@ -493,7 +493,7 @@ def load_state(path):
 
 
 # Bookkeeping that only some runs update; save_state keeps the stored copy when a run passes none.
-KEPT_STATE = ("night_notice", "decisions", "stats", "report_week", "deferred_hour")
+KEPT_STATE = ("night_notice", "decisions", "stats", "report_week", "deferred_hour", "deferred_tries")
 
 
 def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=None, instant_checked=None,
@@ -1722,7 +1722,10 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     sender(text) must return True when at least one chat received the text."""
     now = now or datetime.now(timezone.utc)
     state = load_state(state_path)
-    if not force and not due(state, config, now):
+    hour = f"{now.astimezone(KST):%Y-%m-%d %H}"
+    # This hour's digest was given up for an unavailable Gemini: its news waits for the next one.
+    gave_up = (state or {}).get("deferred_hour") == hour and (state or {}).get("deferred_tries", 0) >= 2
+    if not force and (gave_up or not due(state, config, now)):
         if quiet(config, now):
             log(f"quiet hours: next digest at {config['quiet_hours'][1]:02d}:00 KST")
             night_notice(config, state, state_path, sender, now)
@@ -1811,18 +1814,19 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if classify and news:
         # Gemini also spots stories sent in an earlier digest, across languages.
         kept = classify(news, [told_line(r) for r in recent])
-        # Gemini overloaded (it happens around 06:00 KST, US afternoon): the digest waits once for
-        # the next 5-minute run rather than going out with keyword judgement; the admin hears why.
-        # After that one retry (or from a quarter past) it goes out anyway.
-        hour = f"{now.astimezone(KST):%Y-%m-%d %H}"
-        if (getattr(classify, "failed", False) and not force and now.astimezone(KST).minute < 15
-                and (state or {}).get("deferred_hour") != hour):
-            log("warning: Gemini is unavailable; the digest waits for the next run")
-            stored = dict(load_state(state_path) or state or {}, deferred_hour=hour)
+        # Gemini unavailable (overloaded, timing out): nothing goes out on keyword judgement alone.
+        # The digest tries once more five minutes later; if that fails too, this hour is skipped
+        # and its news, still unsent, goes out with the next hour's digest. The admin hears why.
+        if getattr(classify, "failed", False) and not force:
+            tries = (state or {}).get("deferred_tries", 0) + 1 if (state or {}).get("deferred_hour") == hour else 1
+            log(f"warning: Gemini is unavailable; digest attempt {tries} put off")
+            stored = dict(load_state(state_path) or state or {}, deferred_hour=hour, deferred_tries=tries)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
             state_path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
             if alert:
-                alert(f"⏳ {now.astimezone(KST):%H}시 정기 발송: AI 응답이 늦어 5분 뒤 한 번 더 시도해요. "
-                      "그래도 안 되면 키워드 판단으로 보내요.")
+                h = now.astimezone(KST).hour
+                alert(f"⏳ {h}시 정기 발송: AI 응답이 늦어 5분 뒤 한 번 더 시도해요." if tries == 1 else
+                      f"⏳ {h}시 정기 발송: AI가 계속 응답하지 않아 이번 기사는 다음 정기 발송에 함께 보내요.")
             return []
         for it in news:
             if it not in kept:
@@ -2085,6 +2089,9 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         if classify and items:
             # Alerts are few and read at once: Flash judges and translates them (the owner's call).
             items = classify(items, [told_line(r) for r in urgent_told])
+            if getattr(classify, "failed", False):
+                # No alert on keywords alone; only the always-urgent ones go. The rest wait for the digest.
+                items = [it for it in items if it.get("forced")]
         urgent = trim(sorted([it for it in items if it["score"] >= 3], key=lambda it: -it["score"]),
                       config.get("max_instant_per_run", 5))
         if urgent:

@@ -459,12 +459,19 @@ class RunTests(unittest.TestCase):
                                          fetcher=lambda u: feed, classify=broken, alert=alerts.append), [])
             self.assertEqual(self.sent, [])  # waits once; the items stay new
             self.assertTrue(alerts and alerts[0].startswith("⏳"))  # and the admin hears why
-            sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=6),
-                               fetcher=lambda u: feed, classify=broken, alert=alerts.append)
-            self.assertEqual(len(sent), 1)  # the retry goes out with keyword results
-            self.assertIn("🔑 키워드 판단", self.sent[-1])
+            self.assertEqual(secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=6),
+                                         fetcher=lambda u: feed, classify=broken, alert=alerts.append), [])
+            self.assertIn("다음 정기 발송에 함께", alerts[-1])  # never sent on keywords alone
+            calls = []
+            secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=11),
+                        fetcher=lambda u: calls.append(u) or feed, classify=broken, alert=alerts.append)
+            self.assertEqual(self.sent, [])  # the hour is given up: no third try
         finally:
             secnews.gemini_classify = saved
+        # Next hour, Gemini back: the held news goes out.
+        sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(hours=1, minutes=1),
+                           fetcher=lambda u: feed, classify=lambda items, told=(): items)
+        self.assertEqual(len(sent), 1)
 
     def test_admin_hears_when_a_digest_has_nothing_to_send(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], no_news_notice="admin")
@@ -570,9 +577,10 @@ class RunTests(unittest.TestCase):
             raise OSError("429")
         secnews.gemini_classify = broken
         try:
-            # Past half past the hour, so the digest does not wait for Gemini any longer.
+            # A manual run (force: the admin's test or "send now") still goes out on keyword results;
+            # timer runs wait for Gemini instead (test_digest_waits_while_gemini_is_overloaded).
             sent = secnews.run(cfg, self.state, self.sender, now=NOW + timedelta(minutes=35),
-                               fetcher=lambda u: feed, bootstrap_send=True,
+                               fetcher=lambda u: feed, bootstrap_send=True, force=True,
                                classify=secnews.GeminiClassifier("k", cfg))
         finally:
             secnews.gemini_classify = saved
