@@ -1775,13 +1775,24 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             decide(it, "first_run")
 
     sent = []
+    # The round's funnel under its last message: how much came in and how much made it through.
+    going = [items for _, items, _ in digests if items]
+    footer = ""
+    if going and config.get("digest_footer", True):
+        steps = [f"새 기사 {len(fresh)}건", f"키워드 통과 {passed}건"]
+        if classify and not getattr(classify, "failed", False):
+            steps.append(f"AI 통과 {len(news)}건")
+        footer = "\n\n📊 " + " → ".join(steps + [f"발송 {sum(len(i) for i in going)}건"])
     for title, items, categories in digests:
         if not items:
             continue
         localize(items, translate)
         extra = list(fallback) if categories == "sectors" else []
-        for msg in build_messages(items, now, title, sector_order=list(config.get(categories, {})) + extra,
-                                  key=categories, last=extra, icons=icons(config)):
+        msgs = build_messages(items, now, title, sector_order=list(config.get(categories, {})) + extra,
+                              key=categories, last=extra, icons=icons(config))
+        if items is going[-1]:
+            msgs[-1] += footer
+        for msg in msgs:
             if not sender(msg):
                 # Keep state untouched so the same items are retried next run.
                 raise TelegramError("message was not delivered to any chat")

@@ -716,6 +716,16 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertTrue(calls[0][1])
 
+    def test_last_message_of_a_round_shows_the_funnel(self):
+        mil = dict(CONFIG, max_items_per_run=1, max_focus_per_run=5, feeds=[{"name": "F", "url": "f"}])
+        feed = self.rss(("Ransomware hits hospital", "Wed, 15 Oct 2026 01:00:00 +0000"),
+                        ("Zero-day exploited", "Wed, 15 Oct 2026 01:00:00 +0000"),
+                        ("Airport networks targeted by hackers", "Wed, 15 Oct 2026 01:00:00 +0000"),
+                        ("Company opens new office", "Wed, 15 Oct 2026 01:00:00 +0000"))
+        secnews.run(mil, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
+        self.assertNotIn("📊", self.sent[0])
+        self.assertIn("📊 새 기사 4건 → 키워드 통과 3건 → 발송 2건", self.sent[-1])
+
     def test_focus_is_a_separate_message_with_its_own_cap(self):
         mil = dict(CONFIG, max_items_per_run=1, max_focus_per_run=5)
         feed = (b'<?xml version="1.0"?><rss version="2.0"><channel>'
