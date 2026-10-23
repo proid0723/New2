@@ -585,7 +585,7 @@ def format_item(item, hide_sector=None, key="sectors"):
         lines = [f"{mark}{tags}<b>{title}</b>{badge}"]
         if summary:
             lines.append(html.escape(summary))
-        meta = f"📰 {source}" + (f" · {when}" if when else "") + (" · 🌐 번역" if item.get("translated") else "")
+        meta = f"📰 {source}" + (f" · {when}" if when else "")
         if not item.get("ai_model") and item.get("keyword_only"):
             meta += " · 🔑 키워드"
         lines.append(meta)
