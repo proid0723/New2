@@ -716,6 +716,15 @@ class GeminiBudget:
                 return model
         raise RuntimeError("today's Gemini budget is used up for every model")
 
+    def refund(self, model):
+        """Give back a request Google turned away (busy, timed out): it did not use the day's quota."""
+        if self.used.get(model, 0) > 0:
+            self.used[model] -= 1
+        today = self.history.get(self.day, {})
+        if today.get(model, 0) > 0:
+            today[model] -= 1
+        self._save()
+
     def exhaust(self, model):
         for m, cap in self.models:
             if m == model:
@@ -775,6 +784,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 if not spare:
                     raise  # every model is busy this minute: never retire one for the day over it
                 log(f"warning: Gemini {model}: per-minute limit; trying another model")
+                GEMINI_BUDGET.refund(model)
                 busy.add(model)
                 continue
             # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
@@ -787,6 +797,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             # the models are tried); the busy one stays available for later requests.
             if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and spare:
                 log(f"warning: Gemini {model}: HTTP {e.code}; trying another model")
+                GEMINI_BUDGET.refund(model)
                 busy.add(model)
                 time.sleep(3)
                 continue
@@ -795,6 +806,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             # No answer in time (an overloaded model can sit on a request): ask another model.
             if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
                 log(f"warning: Gemini {model}: {e}; trying another model")
+                GEMINI_BUDGET.refund(model)
                 busy.add(model)
                 continue
             raise
