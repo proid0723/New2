@@ -123,10 +123,20 @@ def parse_xml(raw):
     m = re.search(r'encoding=["\']([\w.-]+)["\']', head)
     enc = (m.group(1) if m else "utf-8").lower()
     if enc.replace("-", "").replace("_", "") in ("utf8", "usascii", "ascii", "iso88591"):
-        return ET.fromstring(raw)
-    text = raw.decode(enc, errors="replace")
+        try:
+            return ET.fromstring(raw)
+        except ET.ParseError:
+            text = raw.decode(enc if enc != "usascii" else "ascii", errors="replace")
+    else:
+        text = raw.decode(enc, errors="replace")
     text = re.sub(r"^\s*<\?xml[^>]*\?>", "", text, count=1)
-    return ET.fromstring(text)
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError:
+        # Some news feeds slip a bare "&" or a control character into a headline; mend and retry.
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+        text = re.sub(r"&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#x[0-9a-fA-F]+);)", "&amp;", text)
+        return ET.fromstring(text)
 
 
 def parse_feed(raw, source):

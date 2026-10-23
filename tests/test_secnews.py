@@ -127,6 +127,13 @@ class SourceParserTests(unittest.TestCase):
         self.assertEqual(it["link"], "https://t.me/chan/101")
         self.assertEqual(it["date"], datetime(2026, 10, 15, 1, 30, tzinfo=timezone.utc))
 
+    def test_feed_with_a_bare_ampersand_or_control_character_is_mended(self):
+        raw = ("<?xml version='1.0' encoding='UTF-8'?><rss version='2.0'><channel>"
+               "<item><title>Airline A&B breach\x01 confirmed</title><link>https://e/a?x=1&y=2</link><guid>a</guid></item>"
+               "</channel></rss>").encode()
+        (it,) = secnews.parse_feed(raw, "Wire")
+        self.assertEqual(it["title"], "Airline A&B breach confirmed")
+
     def test_titleless_rss_post(self):
         (it,) = secnews.parse_feed(BSKY, "Bluesky")
         self.assertEqual(it["title"], "New ransomware strain hits hospitals across Europe.")
