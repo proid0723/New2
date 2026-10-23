@@ -724,7 +724,7 @@ GEMINI_BUDGET = None  # set in main()
 # A model this key cannot use answers 404 and is skipped for the day (logged as a warning).
 DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 Flash
                          {"model": "gemini-3.6-flash", "daily": 18},
-                         {"model": "gemini-3-flash", "daily": 18},
+                         {"model": "gemini-3-flash-preview", "daily": 18},
                          {"model": "gemini-2.5-flash", "daily": 18},
                          {"model": "gemini-flash-lite-latest", "daily": 450},  # 3.5 Flash Lite
                          {"model": "gemini-3.1-flash-lite", "daily": 450}]
