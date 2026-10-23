@@ -597,7 +597,7 @@ def format_item(item, hide_sector=None, key="sectors"):
         # apart, so the bullet goes.
         lines = [f"{mark}{tags}<b>{title}</b>"]
         if summary:
-            lines.append(html.escape(summary))
+            lines += ["", f"<i>{html.escape(summary)}</i>"]  # set apart from the title, in italics
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
             meta += f" · {model_badge(item['ai_model'])}"
