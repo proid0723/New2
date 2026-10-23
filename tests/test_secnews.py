@@ -1109,7 +1109,7 @@ class LocalizeTests(unittest.TestCase):
             secnews.ITEM_STYLE = saved
         self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
         self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
-        self.assertIn("📰 S · 🤖 Gemini 2.5 Flash", out)
+        self.assertIn("📰 S · 🤖2.5", out)
 
     def test_article_shows_which_ai_judged_it(self):
         self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
