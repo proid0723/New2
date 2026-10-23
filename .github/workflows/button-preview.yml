@@ -9,6 +9,7 @@ on:
         options:
           - buttons
           - all_links
+          - all_links_ko
 permissions:
   contents: read
 jobs:

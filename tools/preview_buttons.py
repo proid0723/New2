@@ -30,8 +30,13 @@ def main():
     if not token or not chats[0]:
         raise SystemExit("Administrator credentials are required; no fallback recipients.")
     config = json.loads(Path(os.environ["SECNEWS_CONFIG"]).read_text())
+    style = os.environ.get("PREVIEW_STYLE", "buttons")
+    korean = style == "all_links_ko"
     items = []
-    for feed in config["feeds"]:
+    feeds = config["feeds"]
+    if korean:
+        feeds = sorted(feeds, key=lambda f: not bool(re.search(r"[가-힣]", f["name"])))
+    for feed in feeds:
         if feed.get("type", "rss") != "rss":
             continue
         try:
@@ -39,6 +44,9 @@ def main():
         except Exception:
             continue
         for item in parsed:
+            if korean and (not re.search(r"[가-힣]", item["title"])
+                           or not re.search(r"[가-힣]", secnews.short_summary(item))):
+                continue
             if not item["link"].startswith(("https://", "http://")):
                 continue
             if item["link"] not in {it["link"] for it in items}:
@@ -49,8 +57,7 @@ def main():
             break
     if not items:
         raise SystemExit("No articles available for the preview.")
-    style = os.environ.get("PREVIEW_STYLE", "buttons")
-    if style == "all_links":
+    if style in ("all_links", "all_links_ko"):
         text = "<b>🧪 제목·요약 링크 시안</b>\n\n"
         text += "\n\n".join(linked_article(it) for it in items)
         text += "\n\n제목과 요약 모두 원문 링크입니다. 출처는 일반 글자입니다. RSS 요약으로 만든 화면 시안이며 정기 발송에는 적용하지 않았습니다."
