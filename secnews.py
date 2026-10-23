@@ -564,7 +564,7 @@ def model_tag(model):
 
 
 def model_badge(model):
-    """The AI mark at the end of a boxed title, after a Gemini-like sparkle: ✦3.5L for 3.5 Flash Lite."""
+    """The AI mark at the end of a boxed article's details line, after a Gemini-like sparkle: ✦3.5L for 3.5 Flash Lite."""
     return "✦" + model_tag(model)
 
 
@@ -582,13 +582,13 @@ def format_item(item, hide_sector=None, key="sectors"):
         # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
         # the summary is plain text inside it and the details share one line. The box sets articles
         # apart, so the bullet goes.
-        # The AI mark sits at the end of the title rather than in the details line.
-        badge = f" {model_badge(item['ai_model'])}" if item.get("ai_model") else ""
-        lines = [f"{mark}{tags}<b>{title}</b>{badge}"]
+        lines = [f"{mark}{tags}<b>{title}</b>"]
         if summary:
             lines.append(html.escape(summary))
         meta = f"📰 {source}" + (f" · {when}" if when else "")
-        if not item.get("ai_model") and item.get("keyword_only"):
+        if item.get("ai_model"):
+            meta += f" · {model_badge(item['ai_model'])}"
+        elif item.get("keyword_only"):
             meta += " · 🔑 키워드"
         lines.append(meta)
         return "<blockquote>" + "\n".join(lines) + "</blockquote>"
