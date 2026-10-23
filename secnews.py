@@ -670,7 +670,9 @@ class GeminiBudget:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
-        used = data.get("used") if data.get("day") == self.day else None
+        # v2: days counted from 17:00 KST. Older files used a different day boundary, so their
+        # "used up" marks may belong to the previous Google day: start those counts afresh.
+        used = data.get("used") if data.get("day") == self.day and data.get("v") == 2 else None
         self.used = used if isinstance(used, dict) else {}
         # Requests actually sent, per day and model, for the admin's numbers (exhaust() marks a
         # model full without sending anything, so "used" alone overstates).
@@ -682,7 +684,7 @@ class GeminiBudget:
         keep = sorted(self.history)[-8:]
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps({"day": self.day, "used": self.used,
+            self.path.write_text(json.dumps({"v": 2, "day": self.day, "used": self.used,
                                              "history": {d: self.history[d] for d in keep}}), encoding="utf-8")
         except OSError:
             pass
@@ -1788,10 +1790,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     going = [items for _, items, _ in digests if items]
     footer = ""
     if going and config.get("digest_footer", True):
-        steps = [f"새 기사 {len(fresh)}건", f"키워드 통과 {passed}건"]
-        if classify and not getattr(classify, "failed", False):
-            steps.append(f"AI 통과 {len(news)}건")
-        footer = "\n\n📊 " + " → ".join(steps + [f"발송 {sum(len(i) for i in going)}건"])
+        footer = f"\n\n📊 새 기사 {len(fresh)}건 중 {sum(len(i) for i in going)}건 통과"
     for title, items, categories in digests:
         if not items:
             continue

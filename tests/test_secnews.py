@@ -724,7 +724,7 @@ class RunTests(unittest.TestCase):
                         ("Company opens new office", "Wed, 15 Oct 2026 01:00:00 +0000"))
         secnews.run(mil, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
         self.assertNotIn("📊", self.sent[0])
-        self.assertIn("📊 새 기사 4건 → 키워드 통과 3건 → 발송 2건", self.sent[-1])
+        self.assertIn("📊 새 기사 4건 중 2건 통과", self.sent[-1])
 
     def test_focus_is_a_separate_message_with_its_own_cap(self):
         mil = dict(CONFIG, max_items_per_run=1, max_focus_per_run=5)
@@ -926,6 +926,13 @@ class LocalizeTests(unittest.TestCase):
         self.assertEqual(calls, {"gemini": 0, "google": []})
         self.assertEqual((item["display_title"], item["display_summary"]),
                          ("제로데이 악용", "공격자들이 전 세계 서버를 장악하고 있다."))
+
+    def test_budget_ignores_used_up_marks_from_the_old_day_boundary(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "gemini_usage.json"
+            day = secnews.GeminiBudget(path, [("flash", 2)]).day
+            path.write_text(json.dumps({"day": day, "used": {"flash": 2}}), encoding="utf-8")  # no "v"
+            self.assertEqual(secnews.GeminiBudget(path, [("flash", 2)]).take(), "flash")
 
     def test_budget_keeps_real_requests_per_model_for_the_admin(self):
         with tempfile.TemporaryDirectory() as d:
