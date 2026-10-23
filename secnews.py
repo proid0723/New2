@@ -581,6 +581,9 @@ def model_badge(model):
     return "✦" + model_tag(model)
 
 
+TAP_PAD = "\u2800" * 22  # a blank line that still belongs to the title's link (boxed layout)
+
+
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
     title = html.escape(item.get("display_title", item["title"]))
@@ -595,9 +598,18 @@ def format_item(item, hide_sector=None, key="sectors"):
         # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
         # the summary is plain text inside it and the details share one line. The box sets articles
         # apart, so the bullet goes.
-        lines = [f"{mark}{tags}<b>{title}</b>"]
+        head = f"{mark}{tags}<b>{title}</b>"
+        if item["link"]:
+            # A tap beside the link opens Telegram's message menu. The line under the title is part
+            # of the link, in blank Braille cells (Telegram keeps those; it trims plain spaces), so
+            # the tap target is two lines high.
+            pad = html.escape(item.get("display_title", item["title"])) + "\n" + TAP_PAD
+            head = f'{mark}{tags}<b><a href="{html.escape(item["link"], quote=True)}">{pad}</a></b>'
+        lines = [head]
         if summary:
-            lines += ["", f"<i>{html.escape(summary)}</i>"]  # set apart from the title, in italics
+            if not item["link"]:
+                lines.append("")
+            lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
             meta += f" · {model_badge(item['ai_model'])}"
