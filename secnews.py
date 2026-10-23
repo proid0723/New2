@@ -796,10 +796,19 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 busy.add(model)
                 continue
             raise
+        try:
+            # Models sometimes add a second JSON value or a remark after the answer: keep the first value.
+            answer, _ = json.JSONDecoder().raw_decode(data["candidates"][0]["content"]["parts"][0]["text"].strip())
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
+                log(f"warning: Gemini {model}: unusable answer ({e}); trying another model")
+                busy.add(model)
+                continue
+            raise
         # The exact model behind an alias such as gemini-flash-latest, for the article's AI mark.
         gemini_json.last_model = data.get("modelVersion") or model
         log(f"Gemini request answered by {gemini_json.last_model}")
-        return json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
+        return answer
 
 
 def gemini_translate_batch(texts, key, model="gemini-flash-latest", timeout=120):
