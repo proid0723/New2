@@ -419,6 +419,19 @@ class RunTests(unittest.TestCase):
         sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
         self.assertEqual(sent[0]["date"], datetime(2026, 10, 15, 2, 0, tzinfo=timezone.utc))
 
+    def test_bounded_run_excludes_undated_future_and_older_articles(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], max_age_hours=1, require_publish_date=True)
+        feed = self.rss(
+            ("Airport booking system zero-day exploited", "Wed, 15 Oct 2026 02:55:00 +0000"),
+            ("Airline customer data breach", ""),
+            ("Hotel ransomware disruption", "Wed, 15 Oct 2026 03:30:00 +0000"),
+            ("Shipping network malware infection", "Wed, 15 Oct 2026 11:00:00 +0000"),
+            ("Retail payment server zero-day", "Wed, 15 Oct 2026 01:59:59 +0000"),
+        )
+        sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
+        self.assertEqual([it["title"] for it in sent], ["Airport booking system zero-day exploited"])
+        self.assertEqual(sent[0]["date"], NOW - timedelta(minutes=5))
+
     def test_gemini_classification_drops_reclassifies_and_sets_urgency(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], sectors={"금융": ["bank"]},
                    focus_sectors={"항공사": ["airline"]})
@@ -1464,11 +1477,20 @@ class SubscriberTests(unittest.TestCase):
         secnews.add_subscribers(self.path, ["111", "222"], self.key)
         before = self.path.read_bytes()
         item = {"source": "S", "title": "Zero-day actively exploited", "link": "https://e/1", "id": "1",
-                "date": None, "summary": "", "security_only": False, "min_score": None}
-        sent_to = []
+                "date": datetime.now(timezone.utc) - timedelta(minutes=5), "summary": "", "security_only": False, "min_score": None}
+        items = [item,
+                 dict(item, title="Airport systems hacked by malware", link="https://e/2", id="2", date=None),
+                 dict(item, title="Retailer hit by ransomware", link="https://e/3", id="3",
+                      date=datetime.now(timezone.utc) + timedelta(minutes=30)),
+                 dict(item, title="Hotel booking data breach", link="https://e/4", id="4",
+                      date=datetime.now(timezone.utc) - timedelta(hours=2))]
+        sent_to, sent_text = [], []
+        def capture(token, chat, text, **kw):
+            sent_to.append(chat)
+            sent_text.append(text)
         saved = (secnews.collect, secnews.telegram_send, secnews.telegram_get_updates, dict(os.environ))
-        secnews.collect = lambda config, fetcher, failed=None, counts=None: [dict(item)]
-        secnews.telegram_send = lambda token, chat, text, **kw: sent_to.append(chat)
+        secnews.collect = lambda config, fetcher, failed=None, counts=None: [dict(it) for it in items]
+        secnews.telegram_send = capture
         secnews.telegram_get_updates = lambda *a, **k: self.fail("test mode must not read updates")
         os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", SECNEWS_STATE=str(state), SECNEWS_ONLY_CHATS="999")
         try:
@@ -1478,6 +1500,9 @@ class SubscriberTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(saved[3])
         self.assertEqual(set(sent_to), {"999"})
+        self.assertIn(item["title"], "\n".join(sent_text))
+        for excluded in items[1:]:
+            self.assertNotIn(excluded["title"], "\n".join(sent_text))
         self.assertFalse(state.exists())
         self.assertEqual(self.path.read_bytes(), before)
 

@@ -1983,6 +1983,11 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             reviewed[key] = [reason, item["title"][:120], item.get("source", ""), bool(item.get("focus")), tags[0]]
 
     for item in collect(config, fetcher, failed, counts):
+        if config.get("require_publish_date") and (not item["date"] or item["date"] > now):
+            # A bounded test must not treat an undated or future article as recent, or guess
+            # its timezone. Leave it unsent until its publication time can be established.
+            decide(item, "date_unknown" if not item["date"] else "future")
+            continue
         if item["date"] and item["date"] > now + timedelta(hours=1):
             # Some Korean feeds stamp Korean time as GMT, which puts their articles 9 hours ahead.
             item["date"] = min(item["date"] - timedelta(hours=9), now)
@@ -2177,6 +2182,8 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
 
 REASONS = {
     "sent": "✅ 발송했어요.",
+    "date_unknown": "발행 시각을 확인할 수 없어 최근 기사인지 판단하지 못했어요.",
+    "future": "발행 시각이 실행 시각보다 미래로 되어 있어 뺐어요.",
     "cap": "칸별 발송 상한을 넘었거나, 비슷한 제목의 기사가 먼저 나가서 뺐어요.",
     "score": "키워드 점수가 낮아서 뺐어요 (보안 단어가 없거나 약해요).",
     "nosec": "보안 글만 받는 출처인데 보안 키워드가 없어서 뺐어요.",
@@ -2385,7 +2392,7 @@ def test_send(config, state_path, token, chats, translator):
         return delivered > 0
 
     # A test shows the last hour only, like one digest: more news took minutes and held up the timer runs.
-    config = dict(config, max_age_hours=min(config.get("max_age_hours", 48), 1))
+    config = dict(config, max_age_hours=min(config.get("max_age_hours", 48), 1), require_publish_date=True)
     with tempfile.TemporaryDirectory() as d:
         try:
             run(config, Path(d) / "seen.json", sender, bootstrap_send=True, translate=translator, force=True,
