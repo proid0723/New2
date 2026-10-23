@@ -68,7 +68,8 @@ jobs:
     timeout-minutes: 25
     # Never run two senders at once, or both could send the same items.
     concurrency:
-      group: secnews-send
+      # Tests save nothing, so they get their own queue: a test never holds up a timer run's alert.
+      group: secnews-send${{ (inputs.test_me && !inputs.scheduled) && '-test' || '' }}
       cancel-in-progress: false
     env:
       SECNEWS_STATE: ${{ github.workspace }}/.state/seen.json
