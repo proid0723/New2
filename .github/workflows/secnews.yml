@@ -32,6 +32,10 @@ on:
         description: 'Print the full log (normally only a summary; the full log is printed when a run fails)'
         type: boolean
         default: false
+      item_style:
+        description: 'Try a message layout without changing the settings: "quote" puts each article in a box (leave empty for the configured one)'
+        type: string
+        default: ''
       review_now:
         description: 'Only copy this week''s decisions so far to New2_config/reports for review (no news is sent; untick test_me too)'
         type: boolean
@@ -114,6 +118,7 @@ jobs:
           SECNEWS_VERBOSE: ${{ inputs.verbose && '1' || '' }}
           TIMER_RUN: ${{ github.event_name == 'schedule' || inputs.scheduled }}
           REVIEW_NOW: ${{ inputs.review_now && !inputs.scheduled }}
+          SECNEWS_ITEM_STYLE: ${{ !inputs.scheduled && inputs.item_style || '' }}
         # Timer runs (GitHub schedule or the external ping) wait for the hourly digest, and a run
         # with no saved state only records the current news. Manual runs send now.
         run: |

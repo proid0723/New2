@@ -548,6 +548,9 @@ def model_label(model):
     return " ".join(w.capitalize() if w.isalpha() else w for w in words)
 
 
+ITEM_STYLE = "plain"  # "quote": each article in its own quote box (feeds.json "item_style", set in main())
+
+
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
     title = html.escape(item.get("display_title", item["title"]))
@@ -557,9 +560,21 @@ def format_item(item, hide_sector=None, key="sectors"):
     mark = "🚨 " if hide_sector is not None and item["score"] >= 3 else ""
     lines = [f"🔹 {mark}{tags}<b>{title}</b>"]
     summary = item["display_summary"] if "display_summary" in item else short_summary(item)
+    source = html.escape(item["source"])  # the title already links to the article
+    if ITEM_STYLE == "quote":
+        # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
+        # the summary is plain text inside it and the details share one line.
+        if summary:
+            lines.append(html.escape(summary))
+        meta = f"📰 {source}" + (f" · {when}" if when else "") + (" · 🌐 번역" if item.get("translated") else "")
+        if item.get("ai_model"):
+            meta += f" · 🤖 {model_label(item['ai_model'])}"
+        elif item.get("keyword_only"):
+            meta += " · 🔑 키워드 판단"
+        lines.append(meta)
+        return "<blockquote>" + "\n".join(lines) + "</blockquote>"
     if summary:
         lines.append(f"<blockquote>{html.escape(summary)}</blockquote>")
-    source = html.escape(item["source"])  # the title already links to the article
     meta = f"📰 출처: {source}" + (f" · {when}" if when else "")
     if item.get("translated"):
         # No link to Google's translated copy: its proxy (translate.goog) is blocked in Korea.
@@ -2203,6 +2218,8 @@ def test_send(config, state_path, token, chats, translator):
                 log(f"warning: chat {masked(chat)}: {e}")
         return delivered > 0
 
+    # A test shows the last few hours only: two days of news took over ten minutes and held up the timer runs.
+    config = dict(config, max_age_hours=min(config.get("max_age_hours", 48), 6))
     with tempfile.TemporaryDirectory() as d:
         try:
             run(config, Path(d) / "seen.json", sender, bootstrap_send=True, translate=translator, force=True,
@@ -2240,7 +2257,8 @@ def main(argv=None):
     config = json.loads(args.config.read_text(encoding="utf-8"))
     state_path = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()
     translator = make_translator(config)
-    global GEMINI_BUDGET
+    global GEMINI_BUDGET, ITEM_STYLE
+    ITEM_STYLE = os.environ.get("SECNEWS_ITEM_STYLE", "").strip() or config.get("item_style", "plain")
     GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),
                                  [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)])
     if args.write_review:

@@ -1098,6 +1098,19 @@ class LocalizeTests(unittest.TestCase):
         self.assertEqual(calls["google"], ["Zero-day exploited"])
         self.assertEqual(items[0]["display_title"], "구글:Zero-day exploited")
 
+    def test_quote_style_puts_each_article_in_one_box(self):
+        it = {"title": "Airline breach", "summary": "Details.", "link": "https://e/x", "source": "S", "date": None,
+              "score": 2, "ai_model": "gemini-2.5-flash"}
+        saved = secnews.ITEM_STYLE
+        secnews.ITEM_STYLE = "quote"
+        try:
+            out = secnews.format_item(it, "x")
+        finally:
+            secnews.ITEM_STYLE = saved
+        self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
+        self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
+        self.assertIn("📰 S · 🤖 Gemini 2.5 Flash", out)
+
     def test_article_shows_which_ai_judged_it(self):
         self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
         self.assertEqual(secnews.model_label("gemini-3.5-flash-lite-preview-09-2026"), "Gemini 3.5 Flash Lite Preview")
