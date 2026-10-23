@@ -563,7 +563,9 @@ def format_item(item, hide_sector=None, key="sectors"):
     source = html.escape(item["source"])  # the title already links to the article
     if ITEM_STYLE == "quote":
         # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
-        # the summary is plain text inside it and the details share one line.
+        # the summary is plain text inside it and the details share one line. The box sets articles
+        # apart, so the bullet goes.
+        lines = [f"{mark}{tags}<b>{title}</b>"]
         if summary:
             lines.append(html.escape(summary))
         meta = f"📰 {source}" + (f" · {when}" if when else "") + (" · 🌐 번역" if item.get("translated") else "")
