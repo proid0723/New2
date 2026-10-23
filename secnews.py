@@ -689,8 +689,8 @@ class GeminiBudget:
 
     def take(self, skip=(), lite_first=False):
         """Count one request and return the model to send it to (not one of skip). The Flash
-        models' small daily share is kept for the digests' classification: translations and
-        alert checks (lite_first) go to the Lite models first."""
+        models' small daily share is kept for classification (digests and alerts): batch
+        translations (lite_first) go to the Lite models first."""
         order = sorted(self.models, key=lambda m: "lite" not in m[0]) if lite_first else self.models
         for model, cap in order:
             if model not in skip and self.used.get(model, 0) < cap:
@@ -868,7 +868,7 @@ class GeminiClassifier:
 
     def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=100):
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
-        self.lite_first = False  # set for alert checks, which leave the Flash share to the digests
+        self.lite_first = False  # True would send this classifier's requests to the Lite models first
         self.sectors = list(config.get("sectors", {})) + list(config.get("fallback_sectors", {}))
         self.focus_sectors = list(config.get("focus_sectors", {}))
         self.instructions = config.get("classify_prompt")
@@ -2011,13 +2011,8 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         titles = [it["title"] for it in items if not it["id"].startswith("kev:")] + [r[0] for r in urgent_told]
         items = [it for it in items if not kev_covered(it, titles)]
         if classify and items:
-            if hasattr(classify, "lite_first"):
-                classify.lite_first = True
-            try:
-                items = classify(items, [told_line(r) for r in urgent_told])
-            finally:
-                if hasattr(classify, "lite_first"):
-                    classify.lite_first = False
+            # Alerts are few and read at once: Flash judges and translates them (the owner's call).
+            items = classify(items, [told_line(r) for r in urgent_told])
         urgent = trim(sorted([it for it in items if it["score"] >= 3], key=lambda it: -it["score"]),
                       config.get("max_instant_per_run", 5))
         if urgent:
