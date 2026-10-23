@@ -718,12 +718,21 @@ class GeminiBudget:
         self.history = ({d: dict(v) for d, v in history.items() if isinstance(v, dict)}
                         if isinstance(history, dict) else {})
         self.history.setdefault(self.day, {})
+        # Models that just turned a request away rest until this time (epoch seconds), across
+        # requests and runs: asking them again at once only spends the day's quota.
+        resting = data.get("resting") if isinstance(data, dict) else None
+        self.resting = ({m: t for m, t in resting.items() if isinstance(t, (int, float)) and t > time.time()}
+                        if isinstance(resting, dict) else {})
+
+    def rest(self, model, minutes):
+        self.resting[model] = max(self.resting.get(model, 0), time.time() + minutes * 60)
+        self._save()
 
     def _save(self):
         keep = sorted(self.history)[-8:]
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps({"v": 2, "day": self.day, "used": self.used,
+            self.path.write_text(json.dumps({"v": 2, "day": self.day, "used": self.used, "resting": self.resting,
                                              "history": {d: self.history[d] for d in keep}}), encoding="utf-8")
         except OSError:
             pass
@@ -733,6 +742,9 @@ class GeminiBudget:
         models' small daily share is kept for classification (digests and alerts): batch
         translations (lite_first) go to the Lite models first."""
         order = sorted(self.models, key=lambda m: "lite" not in m[0]) if lite_first else self.models
+        now = time.time()
+        # Resting models come last rather than never: if every model is resting, they still get asked.
+        order = sorted(order, key=lambda m: self.resting.get(m[0], 0) > now)
         for model, cap in order:
             if model not in skip and self.used.get(model, 0) < cap:
                 self.used[model] = self.used.get(model, 0) + 1
@@ -781,10 +793,13 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
     }).encode()
     busy = set()  # models that answered "overloaded" to this request
 
-    def turned_away(model):
+    def turned_away(model, minutes=15):
         """Note a busy model. Google counts turned-away requests against the day's quota too, and when
-        two Flash models are busy the others usually are as well: then this request goes to Lite."""
+        two Flash models are busy the others usually are as well: then this request goes to Lite.
+        The model also rests for a while, so the next requests do not knock on it again."""
         busy.add(model)
+        if GEMINI_BUDGET is not None:
+            GEMINI_BUDGET.rest(model, minutes)
         if (GEMINI_BUDGET is not None and sum(1 for m in busy if "lite" not in m) >= 2
                 and any("lite" in m and GEMINI_BUDGET.used.get(m, 0) < cap and m not in busy
                         for m, cap in GEMINI_BUDGET.models)):
@@ -813,7 +828,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 if not spare:
                     raise  # every model is busy this minute: never retire one for the day over it
                 log(f"warning: Gemini {model}: per-minute limit; trying another model")
-                turned_away(model)
+                turned_away(model, minutes=1)
                 continue
             # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
             # model here. Either way skip the model for the rest of the day and ask the next one.

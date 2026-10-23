@@ -1555,7 +1555,11 @@ class GeminiRetryTests(unittest.TestCase):
             self.assertEqual(asked, ["a", "b"])
             asked.clear()
             secnews.gemini_json("p", "k")
-            self.assertEqual(asked[0], "a")  # still tried first next time: busy is not used up
+            self.assertEqual(asked[0], "b")  # the busy one rests for a while instead of being asked again
+            budget.resting.clear()
+            asked.clear()
+            secnews.gemini_json("p", "k")
+            self.assertEqual(asked[0], "a")  # after its rest it comes first again: busy is not used up
         finally:
             secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
 
