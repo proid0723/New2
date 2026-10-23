@@ -1,0 +1,28 @@
+name: Article summary diagnostic
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/New2_config
+          token: ${{ secrets.CONFIG_REPO_TOKEN }}
+          path: .private-config
+      - name: Diagnose without sending news
+        run: python3 tools/diagnose_summaries.py .private-config
+      - name: Save private diagnostic report
+        working-directory: .private-config
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add reports/summary-diagnostic-result.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record article summary diagnostics'
+          git pull --rebase origin main
+          git push origin HEAD:main
