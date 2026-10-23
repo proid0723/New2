@@ -11,6 +11,7 @@ on:
           - all_links
           - all_links_ko
           - outside_title_ko
+          - outside_plain_summary_ko
 permissions:
   contents: read
 jobs:
