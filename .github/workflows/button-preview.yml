@@ -10,6 +10,7 @@ on:
           - buttons
           - all_links
           - all_links_ko
+          - outside_title_ko
 permissions:
   contents: read
 jobs:

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import secnews
 
 
-def linked_article(item):
+def linked_article(item, outside_title=False):
     title = html.escape(item["title"]) + secnews.TITLE_LINK_SPACES
     summary = secnews.short_summary(item)
     # One link includes the title, separating whitespace and italic summary.
@@ -20,6 +20,12 @@ def linked_article(item):
     url = html.escape(item["link"], quote=True)
     date = item.get("date")
     when = " · " + date.astimezone(secnews.KST).strftime("%m-%d %H:%M") if date else ""
+    if outside_title:
+        heading = f'<b><a href="{url}">{html.escape(item["title"])}</a></b>'
+        linked_summary = f'<a href="{url}"><i>{html.escape(summary)}</i></a>' if summary else ""
+        details = f'📰 {html.escape(item["source"])}{when}'
+        body = linked_summary + "\n\n" + details if linked_summary else details
+        return f'{heading}\n<blockquote>{body}</blockquote>'
     return (f'<blockquote><a href="{url}">{content}</a>\n\n'
             f'📰 {html.escape(item["source"])}{when}</blockquote>')
 
@@ -31,7 +37,7 @@ def main():
         raise SystemExit("Administrator credentials are required; no fallback recipients.")
     config = json.loads(Path(os.environ["SECNEWS_CONFIG"]).read_text())
     style = os.environ.get("PREVIEW_STYLE", "buttons")
-    korean = style == "all_links_ko"
+    korean = style in ("all_links_ko", "outside_title_ko")
     items = []
     feeds = config["feeds"]
     if korean:
@@ -57,7 +63,12 @@ def main():
             break
     if not items:
         raise SystemExit("No articles available for the preview.")
-    if style in ("all_links", "all_links_ko"):
+    if style == "outside_title_ko":
+        text = "<b>🧪 제목을 박스 밖으로 뺀 시안</b>\n\n"
+        text += "\n\n".join(linked_article(it, outside_title=True) for it in items)
+        text += "\n\n제목은 박스 밖, 요약은 박스 안에 두었습니다. 제목과 요약 모두 같은 원문 링크입니다. RSS 요약을 사용한 시안이며 운영 화면은 아직 변경하지 않았습니다."
+        markup = None
+    elif style in ("all_links", "all_links_ko"):
         text = "<b>🧪 제목·요약 링크 시안</b>\n\n"
         text += "\n\n".join(linked_article(it) for it in items)
         text += "\n\n제목과 요약 모두 원문 링크입니다. 출처는 일반 글자입니다. RSS 요약으로 만든 화면 시안이며 정기 발송에는 적용하지 않았습니다."
