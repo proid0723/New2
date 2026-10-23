@@ -672,12 +672,13 @@ class GeminiBudget:
             data = {}
         # v2: days counted from 17:00 KST. Older files used a different day boundary, so their
         # "used up" marks may belong to the previous Google day: start those counts afresh.
-        used = data.get("used") if data.get("day") == self.day and data.get("v") == 2 else None
-        self.used = used if isinstance(used, dict) else {}
+        used = data.get("used") if isinstance(data, dict) and data.get("day") == self.day and data.get("v") == 2 else None
+        self.used = {m: n for m, n in used.items() if isinstance(n, int)} if isinstance(used, dict) else {}
         # Requests actually sent, per day and model, for the admin's numbers (exhaust() marks a
         # model full without sending anything, so "used" alone overstates).
-        history = data.get("history")
-        self.history = {d: dict(v) for d, v in history.items()} if isinstance(history, dict) else {}
+        history = data.get("history") if isinstance(data, dict) else None
+        self.history = ({d: dict(v) for d, v in history.items() if isinstance(v, dict)}
+                        if isinstance(history, dict) else {})
         self.history.setdefault(self.day, {})
 
     def _save(self):
@@ -756,7 +757,11 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                     detail = e.read().decode("utf-8", "replace")
                 except Exception:
                     pass
-            if GEMINI_BUDGET is not None and e.code == 429 and "PerMinute" in detail and len(busy) < 3:
+            per_minute = e.code == 429 and "PerMinute" in detail and "PerDay" not in detail
+            spare = GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1
+            if GEMINI_BUDGET is not None and per_minute:
+                if not spare:
+                    raise  # every model is busy this minute: never retire one for the day over it
                 log(f"warning: Gemini {model}: per-minute limit; trying another model")
                 busy.add(model)
                 continue
@@ -768,7 +773,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 continue
             # 500/502/503/504: Google is overloaded right now. Another model may answer (up to all
             # the models are tried); the busy one stays available for later requests.
-            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and len(busy) < 3:
+            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and spare:
                 log(f"warning: Gemini {model}: HTTP {e.code}; trying another model")
                 busy.add(model)
                 time.sleep(3)
@@ -855,7 +860,7 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
-    out = gemini_json(prompt, key, model, timeout=240, lite_first=lite_first)  # 60 items with translations take a while
+    out = gemini_json(prompt, key, model, timeout=150, lite_first=lite_first)  # 20 items with translations
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
     by_i = {r.get("i"): r for r in out if isinstance(r, dict)}
@@ -871,6 +876,7 @@ class GeminiClassifier:
     def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=100):
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
         self.lite_first = False  # True would send this classifier's requests to the Lite models first
+        self.deadline = 420  # seconds for all requests of one run; the job is stopped after 25 minutes
         self.sectors = list(config.get("sectors", {})) + list(config.get("fallback_sectors", {}))
         self.focus_sectors = list(config.get("focus_sectors", {}))
         self.instructions = config.get("classify_prompt")
@@ -885,8 +891,14 @@ class GeminiClassifier:
         # must not fill the places of judged ones it turned down.
         head = items[:self.limit]
         told = list(told)
+        started = time.monotonic()
         for i in range(0, len(head), self.chunk):
             part = head[i:i + self.chunk]
+            if i and time.monotonic() - started > self.deadline:
+                # Google is slow today: the rest keep keyword results rather than run past the job's limit.
+                log(f"warning: Gemini classification stopped after {self.deadline // 60} minutes; keeping keyword results")
+                failed = self.failed = True
+                break
             try:
                 results = gemini_classify(part, self.key, self.model, self.sectors, self.focus_sectors, told,
                                           self.instructions, self.lite_first)
@@ -1580,16 +1592,18 @@ def kev_covered(item, titles):
 
 STORY_FILLER = {"a", "an", "the", "of", "in", "on", "to", "for", "and", "by", "with", "from", "after", "new",
                 "flaw", "flaws", "bug", "vulnerability", "vulnerabilities", "patch", "patched", "patches",
-                "fix", "fixed", "critical", "attack", "attacks", "data", "breach", "leak", "hack", "hacked"}
+                "fix", "fixed", "critical", "attack", "attacks", "data", "breach", "leak", "hack", "hacked",
+                "exploited", "exploit", "zero-day", "rce", "remote", "code", "execution", "severity", "max",
+                "maximum", "actively", "wild", "cvss"}
 
 
 def same_story(a, b):
-    """Gemini's story lines ("gitlab cvss 10 rce patch", "gitlab maximum severity rce") name the same
-    thing: most of the shorter one's telling words appear in the other."""
+    """Gemini's story lines name the same thing: every telling word of the shorter one (vendor,
+    product, victim) appears in the other. "fortinet fortiweb rce" and "fortinet fortios rce" differ."""
     words = [set(w for w in re.findall(r"[a-z0-9.\-]+", (x.get("story") or "").lower()) if w not in STORY_FILLER)
              for x in (a, b)]
     short, other = sorted(words, key=len)
-    return len(short) >= 2 and len(short & other) / len(short) >= 0.6
+    return len(short) >= 2 and short <= other
 
 
 def trim(items, max_items, max_per_source=0):
@@ -1771,7 +1785,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         # Gemini overloaded (it happens around 06:00 KST, US afternoon): the digest waits for the
         # next 5-minute run rather than going out with keyword categories and machine translation.
         # From half past the hour it goes out anyway.
-        if getattr(classify, "failed", False) and not force and now.astimezone(KST).minute < 30:
+        if getattr(classify, "failed", False) and not force and now.astimezone(KST).minute < 15:
             log("warning: Gemini is unavailable; the digest waits for the next run")
             return []
         for it in news:
@@ -2045,8 +2059,8 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
                 if it.get("focus") and it.get("focus_sectors"):
                     it["sectors"] = it["focus_sectors"]
             for msg in build_messages(urgent, now, wording(config, "instant_title"),
-                                      sector_order=list(config.get("focus_sectors", {})) + list(config.get("sectors", {}))
-                                      + list(fallback),
+                                      sector_order=list(dict.fromkeys(list(config.get("focus_sectors", {}))
+                                                                      + list(config.get("sectors", {})) + list(fallback))),
                                       key="sectors", last=list(fallback), icons=icons(config)):
                 if not sender(msg, silent=hush):
                     raise TelegramError("message was not delivered to any chat")

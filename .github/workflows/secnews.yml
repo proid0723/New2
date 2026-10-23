@@ -61,7 +61,7 @@ jobs:
       (github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *')
       || (github.event_name == 'workflow_dispatch' && !inputs.list_chats)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     # Never run two senders at once, or both could send the same items.
     concurrency:
       group: secnews-send
@@ -177,7 +177,7 @@ jobs:
       # Monday's weekly review file goes to New2_config/reports, where the weekly review reads it.
       # It leaves .state only once pushed, so a failed push is retried on the next run.
       - name: Hand over the weekly review file
-        if: success() && !(inputs.test_me && !inputs.scheduled) && env.HAS_PRIVATE_CONFIG == 'true'
+        if: success() && (!(inputs.test_me && !inputs.scheduled) || (inputs.review_now && !inputs.scheduled)) && env.HAS_PRIVATE_CONFIG == 'true'
         continue-on-error: true
         env:
           TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}

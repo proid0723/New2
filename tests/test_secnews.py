@@ -474,8 +474,9 @@ class RunTests(unittest.TestCase):
         self.assertEqual(seen[1], ["Old story", "Airline breach 0 (airline 0 breach)", "Airline breach 1 (airline 1 breach)"])
 
     def test_same_story_lines_are_one_story(self):
-        self.assertTrue(secnews.same_story({"story": "gitlab cvss 10 rce flaw patched"},
-                                           {"story": "gitlab critical rce vulnerability patched"}))
+        self.assertTrue(secnews.same_story({"story": "gitlab ce ee rce patched"},
+                                           {"story": "gitlab ce ee critical flaw fixed"}))
+        self.assertFalse(secnews.same_story({"story": "fortinet fortiweb rce"}, {"story": "fortinet fortios rce"}))
         self.assertFalse(secnews.same_story({"story": "capcom account data breach"},
                                             {"story": "nol universe data breach"}))
 
@@ -1360,6 +1361,25 @@ class SubscriberTests(unittest.TestCase):
 
 
 class GeminiRetryTests(unittest.TestCase):
+    def test_per_minute_limits_everywhere_never_retire_a_model_for_the_day(self):
+        import io
+        import urllib.error
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json", [("a", 5), ("b", 5), ("c", 5), ("d", 5)])
+
+        def fake(req, timeout=0):
+            body = b'{"error": {"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProject"}]}]}}'
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(body))
+        saved = secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep
+        secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = budget, fake, lambda s: None
+        try:
+            with self.assertRaises(urllib.error.HTTPError):
+                secnews.gemini_json("p", "k")
+            self.assertTrue(all(budget.used.get(m, 0) < 5 for m in "abcd"))  # all still usable later today
+        finally:
+            secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
+
     def test_overloaded_model_hands_the_request_to_another(self):
         import io
         import urllib.error
