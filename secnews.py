@@ -493,7 +493,7 @@ def load_state(path):
 
 
 # Bookkeeping that only some runs update; save_state keeps the stored copy when a run passes none.
-KEPT_STATE = ("night_notice", "decisions", "stats", "report_week")
+KEPT_STATE = ("night_notice", "decisions", "stats", "report_week", "deferred_hour")
 
 
 def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=None, instant_checked=None,
@@ -567,6 +567,8 @@ def format_item(item, hide_sector=None, key="sectors"):
     lines.append(meta)
     if item.get("ai_model"):
         lines.append(f"🤖 {model_label(item['ai_model'])}")
+    elif item.get("keyword_only"):
+        lines.append("🔑 키워드 판단 (AI 응답 지연)")
     return "\n".join(lines)
 
 
@@ -886,7 +888,7 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
-    out = gemini_json(prompt, key, model, timeout=150, lite_first=lite_first)  # 20 items with translations
+    out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first)  # 15 items with translations
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
     by_i = {r.get("i"): r for r in out if isinstance(r, dict)}
@@ -899,7 +901,7 @@ class GeminiClassifier:
     """Second opinion on the keyword filter: Gemini drops off-topic items and sets focus,
     urgency and sector. Keyword results stay for anything Gemini could not judge."""
 
-    def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=100):
+    def __init__(self, key, config, model="gemini-flash-latest", chunk=15, limit=90):
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
         self.lite_first = False  # True would send this classifier's requests to the Lite models first
         self.deadline = 420  # seconds for all requests of one run; the job is stopped after 25 minutes
@@ -911,7 +913,7 @@ class GeminiClassifier:
         """Return the items to keep, best keyword score first in, same order out."""
         judged, dropped, dups, failed, models = {}, 0, 0, False, []
         self.failed = False
-        # The best-ranked 100 are judged, 20 per request: an hourly digest needs one or two requests,
+        # The best-ranked 90 are judged, 15 per request: an hourly digest needs one or two requests,
         # the 06:00 round-up more, smaller ones (one big request of 60 failed with 503 or timed out
         # far more often). The rest are dropped unless Gemini failed: unjudged low-ranked items
         # must not fill the places of judged ones it turned down.
@@ -951,6 +953,7 @@ class GeminiClassifier:
             r = judged.get(id(it))
             if r is None:
                 if failed or it.get("forced"):
+                    it["keyword_only"] = failed
                     kept.append(it)
                 else:
                     it["drop_reason"] = "gemini_limit"
@@ -1808,11 +1811,18 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if classify and news:
         # Gemini also spots stories sent in an earlier digest, across languages.
         kept = classify(news, [told_line(r) for r in recent])
-        # Gemini overloaded (it happens around 06:00 KST, US afternoon): the digest waits for the
-        # next 5-minute run rather than going out with keyword categories and machine translation.
-        # From half past the hour it goes out anyway.
-        if getattr(classify, "failed", False) and not force and now.astimezone(KST).minute < 15:
+        # Gemini overloaded (it happens around 06:00 KST, US afternoon): the digest waits once for
+        # the next 5-minute run rather than going out with keyword judgement; the admin hears why.
+        # After that one retry (or from a quarter past) it goes out anyway.
+        hour = f"{now.astimezone(KST):%Y-%m-%d %H}"
+        if (getattr(classify, "failed", False) and not force and now.astimezone(KST).minute < 15
+                and (state or {}).get("deferred_hour") != hour):
             log("warning: Gemini is unavailable; the digest waits for the next run")
+            stored = dict(load_state(state_path) or state or {}, deferred_hour=hour)
+            state_path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+            if alert:
+                alert(f"⏳ {now.astimezone(KST):%H}시 정기 발송: AI 응답이 늦어 5분 뒤 한 번 더 시도해요. "
+                      "그래도 안 되면 키워드 판단으로 보내요.")
             return []
         for it in news:
             if it not in kept:
@@ -1874,7 +1884,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         text = wording(config, "no_news").replace("{time}", f"{now.astimezone(KST):%H:%M}")
         if notice == "admin":
             if alert:
-                alert(text)
+                alert(f"📭 {now.astimezone(KST):%H}시 정기 발송: 새 기사 {len(fresh)}건 중 보낼 기사 없음")
         elif not sender(text, silent=True):
             log("warning: the no-news notice was not delivered")
 
@@ -1930,7 +1940,7 @@ REASONS = {
     "kev": "같은 취약점을 다룬 뉴스 기사가 있어서 KEV 항목을 뺐어요.",
     "gemini_irrelevant": "AI(Gemini)가 보안과 무관하다고 판단해서 뺐어요.",
     "gemini_dup": "AI(Gemini)가 다른 기사나 이미 보낸 사건과 같은 내용으로 판단해서 뺐어요.",
-    "gemini_limit": "새 기사가 많아 AI 판단 한도(1회 100건) 밖으로 밀려서 뺐어요 (키워드 점수 하위).",
+    "gemini_limit": "새 기사가 많아 AI 판단 한도(1회 90건) 밖으로 밀려서 뺐어요 (키워드 점수 하위).",
     "gemini_focus_only": "군 기사만 받는 출처인데 AI(Gemini)가 군 기사가 아니라고 판단했어요.",
     "rw_filtered": "감시 대상(한국·주요 업종·군 관련)이 아닌 랜섬웨어 피해라서 뺐어요.",
     "old": "48시간보다 오래된 기사라서 뺐어요.",
@@ -2259,7 +2269,8 @@ def main(argv=None):
             if not admin:
                 return
             try:
-                telegram_send(token, admin, text)
+                # Status notes (no news, a delayed digest) come without a sound.
+                telegram_send(token, admin, text, silent=text.startswith(("📭", "⏳")))
             except TelegramError as e:
                 log(f"warning: could not alert the owner: {e}")
 

@@ -454,14 +454,27 @@ class RunTests(unittest.TestCase):
         secnews.gemini_classify = lambda *a, **k: (_ for _ in ()).throw(OSError("503"))
         try:
             top = NOW.replace(minute=0) + timedelta(hours=1)
-            self.assertEqual(secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=5),
-                                         fetcher=lambda u: feed, classify=broken), [])
-            self.assertEqual(self.sent, [])  # waits; the items stay new
-            sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=35),
-                               fetcher=lambda u: feed, classify=broken)
-            self.assertEqual(len(sent), 1)  # past half past: sent with keyword results
+            alerts = []
+            self.assertEqual(secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=1),
+                                         fetcher=lambda u: feed, classify=broken, alert=alerts.append), [])
+            self.assertEqual(self.sent, [])  # waits once; the items stay new
+            self.assertTrue(alerts and alerts[0].startswith("⏳"))  # and the admin hears why
+            sent = secnews.run(cfg, self.state, self.sender, now=top + timedelta(minutes=6),
+                               fetcher=lambda u: feed, classify=broken, alert=alerts.append)
+            self.assertEqual(len(sent), 1)  # the retry goes out with keyword results
+            self.assertIn("🔑 키워드 판단", self.sent[-1])
         finally:
             secnews.gemini_classify = saved
+
+    def test_admin_hears_when_a_digest_has_nothing_to_send(self):
+        cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], no_news_notice="admin")
+        secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: self.rss(), bootstrap_send=True)
+        alerts = []
+        quiet = self.rss(("Company opens new office", "Wed, 15 Oct 2026 01:00:00 +0000"))
+        secnews.run(cfg, self.state, self.sender, now=NOW.replace(minute=0) + timedelta(hours=1),
+                    fetcher=lambda u: quiet, alert=alerts.append)
+        self.assertEqual(self.sent, [])  # subscribers get nothing
+        self.assertTrue(any(a.startswith("📭") and "새 기사 1건 중 보낼 기사 없음" in a for a in alerts))
 
     def test_later_requests_see_stories_kept_by_earlier_ones(self):
         items = [dict(title=f"Airline breach {n}", summary="", score=2, focus=False) for n in range(3)]
