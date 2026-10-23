@@ -1112,7 +1112,7 @@ class LocalizeTests(unittest.TestCase):
         self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
         self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
         self.assertIn("📰 S · ✦2.5</blockquote>", out)  # the AI mark ends the details line
-        self.assertIn("</b>\n\n<i><a href=\"https://e/x\">Booking details of customers were exposed.</a></i>\n", out)  # summary a line below the title, in italics
+        self.assertIn("</b>\n\n<i>Booking details of customers were exposed.</i>\n", out)  # summary a line below the title, in italics
         self.assertNotIn("🤖", out)
         self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "✦3.5L")
 

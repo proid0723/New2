@@ -597,12 +597,7 @@ def format_item(item, hide_sector=None, key="sectors"):
         # apart, so the bullet goes.
         lines = [f"{mark}{tags}<b>{title}</b>"]
         if summary:
-            # Set apart from the title, in italics. It links to the article too: a tap beside the
-            # title's link opens Telegram's message menu instead, so the box's text is the target.
-            text = html.escape(summary)
-            if item["link"]:
-                text = f'<a href="{html.escape(item["link"], quote=True)}">{text}</a>'
-            lines += ["", f"<i>{text}</i>"]
+            lines += ["", f"<i>{html.escape(summary)}</i>"]  # set apart from the title, in italics
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
             meta += f" · {model_badge(item['ai_model'])}"
