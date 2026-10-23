@@ -1912,6 +1912,7 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
     scorer = Scorer(config.get("keywords", {}))
     fallback = config.get("fallback_sectors", {})
     tagger = SectorTagger(config.get("sectors", {}), fallback=fallback)
+    focus_tagger = SectorTagger(config.get("focus_sectors", {}), key="focus_sectors")
     strong = [_keyword_re(k) for k in config.get("keywords", {}).get("instant", [])]
     always = [_keyword_re(k) for k in config.get("keywords", {}).get("always_urgent", [])]
     window = timedelta(minutes=config.get("instant_max_age_minutes", 180))
@@ -1951,6 +1952,8 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         if first or not signal or already_told(item, urgent_told, sent_cves):
             continue
         tagger.tag(item)
+        if item["focus"]:
+            focus_tagger.tag(item)
         candidates.append((key, tkey, item))
 
     sent, extra = [], {}
@@ -1967,8 +1970,13 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         if urgent:
             localize(urgent, translate)
             hush = quiet(config, now)
+            # One alert message for both kinds: a focus story shows under its focus category.
+            for it in urgent:
+                if it.get("focus") and it.get("focus_sectors"):
+                    it["sectors"] = it["focus_sectors"]
             for msg in build_messages(urgent, now, wording(config, "instant_title"),
-                                      sector_order=list(config.get("sectors", {})) + list(fallback),
+                                      sector_order=list(config.get("focus_sectors", {})) + list(config.get("sectors", {}))
+                                      + list(fallback),
                                       key="sectors", last=list(fallback), icons=icons(config)):
                 if not sender(msg, silent=hush):
                     raise TelegramError("message was not delivered to any chat")
