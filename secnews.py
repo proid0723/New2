@@ -48,7 +48,7 @@ TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 # Actions logs of a public repository are public. There a run prints only warnings, errors and a
 # short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
 QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
-SUMMARY = re.compile(r"^(warning|error|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
+SUMMARY = re.compile(r"^(warning|error|ai models:|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
 HELD = []
 
 
@@ -755,7 +755,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 except Exception:
                     pass
             if GEMINI_BUDGET is not None and e.code == 429 and "PerMinute" in detail and len(busy) < 3:
-                log(f"Gemini {model}: per-minute limit; trying another model")
+                log(f"warning: Gemini {model}: per-minute limit; trying another model")
                 busy.add(model)
                 continue
             # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
@@ -767,7 +767,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             # 500/502/503/504: Google is overloaded right now. Another model may answer (up to all
             # the models are tried); the busy one stays available for later requests.
             if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and len(busy) < 3:
-                log(f"Gemini {model}: HTTP {e.code}; trying another model")
+                log(f"warning: Gemini {model}: HTTP {e.code}; trying another model")
                 busy.add(model)
                 time.sleep(3)
                 continue
@@ -875,7 +875,7 @@ class GeminiClassifier:
 
     def __call__(self, items, told=()):
         """Return the items to keep, best keyword score first in, same order out."""
-        judged, dropped, dups, failed = {}, 0, 0, False
+        judged, dropped, dups, failed, models = {}, 0, 0, False, []
         self.failed = False
         # The best-ranked 100 are judged, 20 per request: an hourly digest needs one or two requests,
         # the 06:00 round-up more, smaller ones (one big request of 60 failed with 503 or timed out
@@ -891,9 +891,11 @@ class GeminiClassifier:
                     d = r.get("dup_of")
                     if isinstance(d, int) and not isinstance(d, bool) and 0 <= d < len(part) and d != n:
                         results[max(n, d)]["duplicate"] = True  # the better-ranked report stays
+                answered = getattr(gemini_json, "last_model", None) or self.model
+                models.append(answered)
                 for it, r in zip(part, results):
                     judged[id(it)] = r
-                    it["ai_model"] = getattr(gemini_json, "last_model", None) or self.model
+                    it["ai_model"] = answered
             except Exception as e:
                 log(f"warning: Gemini classification failed ({e}); keeping keyword results")
                 failed = self.failed = True
@@ -934,6 +936,7 @@ class GeminiClassifier:
         if judged:
             log(f"classified {len(judged)} item(s) with Gemini; dropped {dropped} as off-topic, {dups} as duplicates"
                 + (" (partly)" if failed else ""))
+            log("ai models: " + ", ".join(f"{m} x{models.count(m)}" for m in dict.fromkeys(models)))
         return kept
 
 
