@@ -552,13 +552,12 @@ ITEM_STYLE = "plain"  # "quote": each article in its own quote box (feeds.json "
 
 
 def model_tag(model):
-    """Compact AI mark for the boxed layout: the version alone ("3.8", "3.5"). Each version in use is
-    either a Flash or a Flash Lite model, so the number is enough."""
+    """Compact AI mark for the boxed layout: "3.8" for Gemini 3.8 Flash, "3.5L" for 3.5 Flash Lite."""
     label = model_label(model)
     m = re.search(r"\d+(\.\d+)?", label)
     if not m:
         return label
-    return m.group(0)
+    return m.group(0) + ("L" if "Lite" in label else "")
 
 
 def format_item(item, hide_sector=None, key="sectors"):
