@@ -917,6 +917,19 @@ class LocalizeTests(unittest.TestCase):
         self.assertEqual((item["display_title"], item["display_summary"]),
                          ("제로데이 악용", "공격자들이 전 세계 서버를 장악하고 있다."))
 
+    def test_budget_keeps_real_requests_per_model_for_the_admin(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "gemini_usage.json"
+            budget = secnews.GeminiBudget(path, [("model-a", 2), ("model-b", 5)])
+            budget.take(); budget.take(); budget.take()
+            budget.exhaust("model-b")  # marked full, nothing sent
+            again = secnews.GeminiBudget(path, [("model-a", 2), ("model-b", 5)])
+            self.assertEqual(again.history[again.day], {"model-a": 2, "model-b": 1})
+            lines = again.summary()
+            self.assertIn("사용 3회", lines[0])
+            self.assertIn("model-a: 2회 / 한도 2", lines[1])
+            self.assertIn("model-b: 1회 / 한도 5", lines[2])
+
     def test_daily_budget_moves_to_the_next_model_then_stops(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "gemini_usage.json"

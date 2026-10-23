@@ -657,17 +657,29 @@ class GeminiBudget:
             data = {}
         used = data.get("used") if data.get("day") == self.day else None
         self.used = used if isinstance(used, dict) else {}
+        # Requests actually sent, per day and model, for the admin's numbers (exhaust() marks a
+        # model full without sending anything, so "used" alone overstates).
+        history = data.get("history")
+        self.history = {d: dict(v) for d, v in history.items()} if isinstance(history, dict) else {}
+        self.history.setdefault(self.day, {})
+
+    def _save(self):
+        keep = sorted(self.history)[-8:]
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps({"day": self.day, "used": self.used,
+                                             "history": {d: self.history[d] for d in keep}}), encoding="utf-8")
+        except OSError:
+            pass
 
     def take(self, skip=()):
         """Count one request and return the model to send it to (not one of skip)."""
         for model, cap in self.models:
             if model not in skip and self.used.get(model, 0) < cap:
                 self.used[model] = self.used.get(model, 0) + 1
-                try:
-                    self.path.parent.mkdir(parents=True, exist_ok=True)
-                    self.path.write_text(json.dumps({"day": self.day, "used": self.used}), encoding="utf-8")
-                except OSError:
-                    pass
+                today = self.history[self.day]
+                today[model] = today.get(model, 0) + 1
+                self._save()
                 return model
         raise RuntimeError("today's Gemini budget is used up for every model")
 
@@ -675,10 +687,17 @@ class GeminiBudget:
         for m, cap in self.models:
             if m == model:
                 self.used[m] = cap
-        try:
-            self.path.write_text(json.dumps({"day": self.day, "used": self.used}), encoding="utf-8")
-        except OSError:
-            pass
+        self._save()
+
+    def summary(self, days=1):
+        """Requests per model over the last `days` Google days, as lines for the admin."""
+        recent = sorted(self.history)[-days:]
+        lines = []
+        for model, cap in self.models:
+            n = sum(self.history[d].get(model, 0) for d in recent)
+            lines.append(f"  - {model}: {n}회" + (f" / 한도 {cap}" if days == 1 else ""))
+        total = sum(sum(self.history[d].values()) for d in recent)
+        return [f"· AI(Gemini) 사용 {total}회" + (" (오늘, 미국 태평양 시간 기준)" if days == 1 else f" (최근 {len(recent)}일)")] + lines
 
 
 GEMINI_BUDGET = None  # set in main()
@@ -1351,7 +1370,8 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
         if stats_asked:
             say(admin, f"📊 <b>구독 현황</b> ({datetime.now(KST):%m/%d %H:%M})\n"
                        f"· 구독 중: {sum(1 for c in ids if c not in stopped)}명\n"
-                       f"· 승인 대기: {len(pending)}명\n· 해지: {len(stopped)}명\n· 거절: {len(denied)}명")
+                       f"· 승인 대기: {len(pending)}명\n· 해지: {len(stopped)}명\n· 거절: {len(denied)}명"
+                       + ("\n" + "\n".join(GEMINI_BUDGET.summary()) if GEMINI_BUDGET else ""))
         for q in questions:
             say(admin, why(q) if why else "이 기능을 쓸 수 없어요.")
         for cid in requests:
@@ -1845,6 +1865,8 @@ def write_review(folder, stats, now, name=None):
             "until": local.isoformat(),
             "numbers": {k: stats.get(k, 0) for k in ("runs", "collected", "passed", "ai_dropped", "sent")},
             "items_per_feed": stats.get("feeds", {}),
+            "gemini": ({"caps": dict(GEMINI_BUDGET.models), "requests_by_day": GEMINI_BUDGET.history}
+                       if GEMINI_BUDGET else None),
             "fields": ["reason", "title", "source", "focus", "category"],
             "items": list(stats.get("review", {}).values())}
     folder.mkdir(parents=True, exist_ok=True)
@@ -1859,6 +1881,8 @@ def weekly_report(config, stats, now):
              f"· 키워드 통과 {stats.get('passed', 0)}건 → AI 제외 {stats.get('ai_dropped', 0)}건 → "
              f"발송 {stats.get('sent', 0)}건",
              "· 기간 내내 0건인 출처: " + (", ".join(html.escape(n) for n in quiet_feeds) or "없음")]
+    if GEMINI_BUDGET:
+        lines += GEMINI_BUDGET.summary(days=7)
     if stats.get("ai_examples"):
         lines.append("· AI가 무관하다고 뺀 기사 (놓친 게 있으면 키워드·기준을 고쳐요):")
         lines += [f"  - {html.escape(t)}" for t in stats["ai_examples"][-10:]]
@@ -2018,16 +2042,16 @@ def main(argv=None):
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
     state_path = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()
+    translator = make_translator(config)
+    global GEMINI_BUDGET
+    GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),
+                                 [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)])
     if args.write_review:
         now = datetime.now(timezone.utc)
         stats = (load_state(state_path) or {}).get("stats") or {}
         write_review(state_path.parent / "reviews", stats, now, f"snapshot-{now.astimezone(KST):%Y-%m-%d-%H%M}.json")
         log(f"review snapshot: {len(stats.get('review', {}))} items")
         return 0
-    translator = make_translator(config)
-    global GEMINI_BUDGET
-    GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),
-                                 [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)])
 
     if args.dry_run:
         def sender(text, silent=False):
