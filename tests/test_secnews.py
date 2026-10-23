@@ -1101,8 +1101,8 @@ class LocalizeTests(unittest.TestCase):
         self.assertEqual(items[0]["display_title"], "구글:Zero-day exploited")
 
     def test_quote_style_puts_each_article_in_one_box(self):
-        it = {"title": "Airline breach", "summary": "Details.", "link": "https://e/x", "source": "S", "date": None,
-              "score": 2, "ai_model": "gemini-2.5-flash"}
+        it = {"title": "Airline breach", "summary": "Booking details of customers were exposed.", "link": "https://e/x",
+              "source": "S", "date": None, "score": 2, "ai_model": "gemini-2.5-flash"}
         saved = secnews.ITEM_STYLE
         secnews.ITEM_STYLE = "quote"
         try:
@@ -1112,7 +1112,7 @@ class LocalizeTests(unittest.TestCase):
         self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
         self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
         self.assertIn("📰 S · ✦2.5</blockquote>", out)  # the AI mark ends the details line
-        self.assertIn("</b>\n\n<i>Details.</i>\n", out)  # summary a line below the title, in italics
+        self.assertIn("</b>\n\n<i>Booking details of customers were exposed.</i>\n", out)  # summary a line below the title, in italics
         self.assertNotIn("🤖", out)
         self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "✦3.5L")
 
