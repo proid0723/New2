@@ -639,7 +639,13 @@ def google_translate(text, target="ko", timeout=15):
 
 
 GEMINI_PROMPT = """You translate English cybersecurity news into Korean for a Telegram digest.
-Write natural Korean news style: headlines short like Korean news headlines, summaries as plain sentences.
+Write natural Korean news style, never word-for-word:
+- Headlines: short Korean news headline style ending in a noun or a short verb stem, no "~합니다/~했습니다",
+  no "~는/~은" sentence endings, no "경고 -"/"Warning:" prefixes. E.g. "Warning - Node2Shell RCE exploit works on
+  official Node.js builds" -> "Node2Shell RCE 익스플로잇, 공식 Node.js 빌드서도 작동".
+- Summaries: plain written news sentences ending in "~했다/~이다" (not "~합니다"), with natural Korean word order.
+  E.g. "Researchers demonstrated how crafted Brotli data could trigger code execution in vulnerable Node.js
+  apps." -> "연구진이 조작된 Brotli 데이터로 취약한 Node.js 앱에서 코드를 실행할 수 있음을 시연했다."
 Keep company, product, group and malware names as they are (Anthropic, BeyondTrust, Lazarus), and keep
 CVE ids, version numbers and acronyms (RCE, APT, KEV, CVSS) unchanged. Use the usual Korean security
 terms (zero-day = 제로데이, exploit = 익스플로잇 or 악용, patch = 패치). Do not add or drop information.
