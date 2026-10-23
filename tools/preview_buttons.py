@@ -1,4 +1,4 @@
-"""Send a one-off URL-button preview only to configured administrator chats."""
+"""Send a one-off message layout preview only to configured administrator chats."""
 import html
 import json
 import os
@@ -8,6 +8,20 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import secnews
+
+
+def linked_article(item):
+    title = html.escape(item["title"]) + secnews.TITLE_LINK_SPACES
+    summary = secnews.short_summary(item)
+    # One link includes the title, separating whitespace and italic summary.
+    content = f"<b>{title}</b>"
+    if summary:
+        content += f"\n\n<i>{html.escape(summary)}</i>"
+    url = html.escape(item["link"], quote=True)
+    date = item.get("date")
+    when = " · " + date.astimezone(secnews.KST).strftime("%m-%d %H:%M") if date else ""
+    return (f'<blockquote><a href="{url}">{content}</a>\n\n'
+            f'📰 {html.escape(item["source"])}{when}</blockquote>')
 
 
 def main():
@@ -35,16 +49,25 @@ def main():
             break
     if not items:
         raise SystemExit("No articles available for the preview.")
-    text = "<b>🧪 기사 제목 버튼 테스트</b>\n\n"
-    text += "\n\n".join(f"{i}. {html.escape(it['title'][:250])}" for i, it in enumerate(items, 1))
-    text += "\n\n아래 버튼은 한 줄에 하나씩입니다. 버튼 안 어디를 눌러도 해당 원문이 열립니다. 긴 제목이 잘리는지도 확인해 주세요."
-    markup = {"inline_keyboard": [[{"text": it["title"], "url": it["link"]}] for it in items]}
+    style = os.environ.get("PREVIEW_STYLE", "buttons")
+    if style == "all_links":
+        text = "<b>🧪 제목·요약 링크 시안</b>\n\n"
+        text += "\n\n".join(linked_article(it) for it in items)
+        text += "\n\n제목과 요약 모두 원문 링크입니다. 출처는 일반 글자입니다. RSS 요약으로 만든 화면 시안이며 정기 발송에는 적용하지 않았습니다."
+        markup = None
+    elif style == "buttons":
+        text = "<b>🧪 기사 제목 버튼 테스트</b>\n\n"
+        text += "\n\n".join(f"{i}. {html.escape(it['title'][:250])}" for i, it in enumerate(items, 1))
+        text += "\n\n아래 버튼은 한 줄에 하나씩입니다. 버튼 안 어디를 눌러도 해당 원문이 열립니다. 긴 제목이 잘리는지도 확인해 주세요."
+        markup = {"inline_keyboard": [[{"text": it["title"], "url": it["link"]}] for it in items]}
+    else:
+        raise SystemExit("Unknown preview style.")
     for chat in dict.fromkeys(chats):
         if chat:
             result = secnews.telegram_send(token, chat, text, markup=markup)
             if not result.get("ok"):
                 raise SystemExit("Telegram did not accept the preview.")
-    print("Administrator button preview sent; no subscriber or news state was accessed.")
+    print("Administrator layout preview sent; no subscriber or news state was accessed.")
 
 
 if __name__ == "__main__":

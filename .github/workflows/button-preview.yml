@@ -1,6 +1,14 @@
-name: Admin button preview
+name: Admin layout preview
 on:
   workflow_dispatch:
+    inputs:
+      style:
+        description: Layout to preview only for the administrator
+        type: choice
+        default: buttons
+        options:
+          - buttons
+          - all_links
 permissions:
   contents: read
 jobs:
@@ -22,4 +30,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TEST_CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
           SECNEWS_CONFIG: .private-config/feeds.json
+          PREVIEW_STYLE: ${{ inputs.style }}
         run: python3 tools/preview_buttons.py
