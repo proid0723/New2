@@ -1498,6 +1498,36 @@ class GeminiRetryTests(unittest.TestCase):
         finally:
             secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
 
+    def test_lite_thinks_before_judging_and_asks_again_without_it_if_refused(self):
+        import io
+        import urllib.error
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json", [("flash-lite-a", 9)])
+        sent = []
+
+        def fake(req, timeout=0):
+            config = json.loads(req.data)["generationConfig"]
+            sent.append(config.get("thinkingConfig"))
+            if len(sent) == 2 and config.get("thinkingConfig"):
+                raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, None)
+            return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": "[1]"}]}}]}).encode())
+        saved = secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, set(secnews.NO_THINKING)
+        secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen = budget, fake
+        try:
+            secnews.gemini_json("p", "k")  # a translation: no thinking
+            self.assertIsNone(sent[0])
+            sent.clear()
+            self.assertEqual(secnews.gemini_json("p", "k", think=True), [1])
+            self.assertEqual(sent[0], {"thinkingLevel": secnews.LITE_THINKING})
+            self.assertEqual(secnews.gemini_json("p", "k", think=True), [1])  # refused, then asked plainly
+            self.assertEqual(sent[1:], [{"thinkingLevel": secnews.LITE_THINKING}, None])
+            self.assertIn("flash-lite-a", secnews.NO_THINKING)
+        finally:
+            secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen = saved[:2]
+            secnews.NO_THINKING.clear()
+            secnews.NO_THINKING.update(saved[2])
+
     def test_a_model_that_times_out_hands_the_request_to_another(self):
         import io
         d = tempfile.TemporaryDirectory()

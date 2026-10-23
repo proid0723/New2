@@ -772,6 +772,11 @@ class GeminiBudget:
 
 
 GEMINI_BUDGET = None  # set in main()
+# How hard Lite models think before judging news (Gemini 3 "thinkingLevel": minimal, low, medium,
+# high; "off" sends nothing). Lite answers fast without it but misses more; its 450 a day leave
+# room. feeds.json "lite_thinking", set in main(). Models that refuse the setting go in NO_THINKING.
+LITE_THINKING = "medium"
+NO_THINKING = set()
 # Free tier, October 2026: each model has its own daily quota (Flash models 20 requests a day, Flash
 # Lite 500). Four Flash shares (about 70 a day) cover the digests; Flash Lite is the deep reserve.
 # A model this key cannot use answers 404 and is skipped for the day (logged as a warning).
@@ -785,12 +790,16 @@ DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 F
                          {"model": "gemini-3.1-flash-lite", "daily": 450}]
 
 
-def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False):
-    """One Gemini request that answers in JSON. Raises on any failure."""
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
-    }).encode()
+def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False, think=False):
+    """One Gemini request that answers in JSON. Raises on any failure. think: a Lite model thinks
+    first (LITE_THINKING), for judging news; Flash models think on their own."""
+
+    def body_for(model):
+        config = {"temperature": 0.2, "responseMimeType": "application/json"}
+        if think and "lite" in model and LITE_THINKING != "off" and model not in NO_THINKING:
+            config["thinkingConfig"] = {"thinkingLevel": LITE_THINKING}
+        return json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config}).encode()
+
     busy = set()  # models that answered "overloaded" to this request
 
     def turned_away(model, minutes=15):
@@ -809,12 +818,18 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
         if GEMINI_BUDGET is not None:
             model = GEMINI_BUDGET.take(skip=busy, lite_first=lite_first)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body = body_for(model)
         req = urllib.request.Request(url, data=body, headers={
             "Content-Type": "application/json", "x-goog-api-key": key, "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
+            # 400 for the thinking setting: this model does not take it. Ask again without it.
+            if e.code == 400 and b"thinkingConfig" in body:
+                log(f"warning: Gemini {model}: HTTP 400 with thinking on; asking again without it")
+                NO_THINKING.add(model)
+                continue
             # 429 per minute (free Flash models allow 5 requests a minute): busy, like a 503 below.
             detail = ""
             if e.code == 429:
@@ -941,7 +956,7 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
-    out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first)  # 15 items with translations
+    out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first, think=True)  # 15 items with translations
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
     by_i = {r.get("i"): r for r in out if isinstance(r, dict)}
@@ -2285,7 +2300,8 @@ def main(argv=None):
     config = json.loads(args.config.read_text(encoding="utf-8"))
     state_path = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()
     translator = make_translator(config)
-    global GEMINI_BUDGET, ITEM_STYLE
+    global GEMINI_BUDGET, ITEM_STYLE, LITE_THINKING
+    LITE_THINKING = str(config.get("lite_thinking", LITE_THINKING)).strip().lower() or "off"
     ITEM_STYLE = os.environ.get("SECNEWS_ITEM_STYLE", "").strip() or config.get("item_style", "plain")
     GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),
                                  [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)])
