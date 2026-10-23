@@ -33,6 +33,7 @@ from html.parser import HTMLParser
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 CONFIG_PATH = Path(__file__).with_name("feeds.json")
 DEFAULT_STATE = Path.home() / ".local" / "state" / "secnews" / "seen.json"
@@ -101,7 +102,7 @@ def clean_text(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-def parse_date(s):
+def parse_date(s, default_tz=timezone.utc):
     s = (s or "").strip()
     if not s:
         return None
@@ -113,8 +114,32 @@ def parse_date(s):
         except ValueError:
             return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=default_tz)
     return dt
+
+
+class _ArticleDates(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.values = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "meta":
+            attrs = dict(attrs)
+            key = (attrs.get("property") or attrs.get("name") or "").lower()
+            if attrs.get("content"):
+                self.values.setdefault(key, attrs["content"])
+
+
+def parse_article_date(raw, default_tz=timezone.utc):
+    """Read publication metadata, never a modification time or the current fetch time."""
+    parser = _ArticleDates()
+    parser.feed(raw[:200_000].decode("utf-8", "replace"))
+    for key in ("article:published_time", "datepublished", "pubdate", "date"):
+        date = parse_date(parser.values.get(key), default_tz)
+        if date is not None:
+            return date
+    return None
 
 
 def parse_xml(raw):
@@ -142,7 +167,7 @@ def parse_xml(raw):
         return ET.fromstring(text)
 
 
-def parse_feed(raw, source):
+def parse_feed(raw, source, default_tz=timezone.utc):
     """Return items from an RSS 2.0, RSS 1.0 (RDF) or Atom document."""
     root = parse_xml(raw)
     items = []
@@ -162,7 +187,7 @@ def parse_feed(raw, source):
         guid = _text(_child(el, "guid", "id"))
         if not link and guid.startswith("http"):
             link = guid
-        date = parse_date(_text(_child(el, "pubdate", "published", "updated", "date")))
+        date = parse_date(_text(_child(el, "pubdate", "published", "updated", "date")), default_tz)
         summary = clean_text(_text(_child(el, "description", "summary", "content")))
         if not title and summary:  # social-media feeds have posts, not headlines
             title, summary = split_post(summary)
@@ -1749,7 +1774,25 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
             raw = fetcher(feed["url"])
             kind = feed.get("type", "rss")
             parser = {"rss": parse_feed, "cisa_kev": parse_kev}.get(kind) or PARSERS[kind]
-            got = [it for it in parser(raw, feed["name"]) if not blocked_outlet(it, blocked)]
+            date_tz = ZoneInfo(feed["date_timezone"]) if feed.get("date_timezone") else timezone.utc
+            parsed = parser(raw, feed["name"], default_tz=date_tz) if kind == "rss" else parser(raw, feed["name"])
+            got = [it for it in parsed if not blocked_outlet(it, blocked)]
+            if feed.get("fetch_article_dates"):
+                todo = [it for it in got if it["date"] is None and it["link"].startswith(("https://", "http://"))]
+
+                def date_of(item):
+                    try:
+                        return parse_article_date(fetcher(item["link"]), date_tz)
+                    except Exception:
+                        return None
+
+                if todo:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                        for item, date in zip(todo, pool.map(date_of, todo)):
+                            item["date"] = date
+                    missing = sum(it["date"] is None for it in todo)
+                    if missing:
+                        log(f"warning: {feed_label(feed, n)}: publication time unavailable for {missing} item(s)")
             for it in got:
                 it["title"] = strip_outlet(it["title"], it.get("source", ""))
                 it["security_only"] = feed.get("security_only", False)

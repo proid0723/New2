@@ -83,6 +83,38 @@ class ParseTests(unittest.TestCase):
         (item,) = secnews.parse_feed(EUCKR, "KR")
         self.assertIn("랜섬웨어", item["title"])
 
+    def test_feed_timezone_applies_only_to_dates_without_an_offset(self):
+        raw = (b'<rss><channel><item><title>Example A</title><link>https://example.com/a</link>'
+               b'<pubDate>2026-10-15 10:00:00</pubDate></item>'
+               b'<item><title>Example B</title><link>https://example.com/b</link>'
+               b'<pubDate>2026-10-15T10:00:00+00:00</pubDate></item></channel></rss>')
+        cfg = {"feeds": [{"name": "Wire", "url": "feed", "date_timezone": "Asia/Seoul"}]}
+        a, b = secnews.collect(cfg, lambda url: raw)
+        self.assertEqual(a["date"].astimezone(timezone.utc), datetime(2026, 10, 15, 1, tzinfo=timezone.utc))
+        self.assertEqual(b["date"], datetime(2026, 10, 15, 10, tzinfo=timezone.utc))
+
+    def test_missing_feed_dates_use_article_publication_metadata(self):
+        raw = (b'<rss><channel><item><title>Example A</title><link>https://example.com/a</link></item>'
+               b'<item><title>Example B</title><link>https://example.com/b</link>'
+               b'<pubDate>2026-10-15T01:00:00Z</pubDate></item>'
+               b'<item><title>Example C</title><link>https://example.com/c</link></item></channel></rss>')
+        page = (b'<meta name="site:published_time" content="2026-10-15T12:00:00+09:00">'
+                b'<meta property="article:modified_time" content="2026-10-15T12:00:00+09:00">'
+                b'<meta content="2026-10-15T10:30:00+09:00" name="article:published_time">')
+        cfg = {"feeds": [{"name": "Wire", "url": "feed", "fetch_article_dates": True}]}
+        calls = []
+        def fetcher(url):
+            calls.append(url)
+            return {"feed": raw, "https://example.com/a": page}[url]
+        a, b, c = secnews.collect(cfg, fetcher)
+        self.assertEqual(a["date"].astimezone(timezone.utc), datetime(2026, 10, 15, 1, 30, tzinfo=timezone.utc))
+        self.assertEqual(b["date"], datetime(2026, 10, 15, 1, tzinfo=timezone.utc))
+        self.assertIsNone(c["date"])
+        self.assertCountEqual(calls, ["feed", "https://example.com/a", "https://example.com/c"])
+
+    def test_article_date_never_substitutes_a_modification_time(self):
+        self.assertIsNone(secnews.parse_article_date(b'<meta property="article:modified_time" content="2026-10-15T01:00:00Z">'))
+
     def test_html_page_is_reported(self):
         with self.assertRaisesRegex(ValueError, "HTML page"):
             secnews.parse_feed(b"<!doctype html><html><head></head></html>", "X")
