@@ -2357,8 +2357,8 @@ def test_send(config, state_path, token, chats, translator):
                 log(f"warning: chat {masked(chat)}: {e}")
         return delivered > 0
 
-    # A test shows the last few hours only: two days of news took over ten minutes and held up the timer runs.
-    config = dict(config, max_age_hours=min(config.get("max_age_hours", 48), 6))
+    # A test shows the last hour only, like one digest: more news took minutes and held up the timer runs.
+    config = dict(config, max_age_hours=min(config.get("max_age_hours", 48), 1))
     with tempfile.TemporaryDirectory() as d:
         try:
             run(config, Path(d) / "seen.json", sender, bootstrap_send=True, translate=translator, force=True,
