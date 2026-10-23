@@ -2052,7 +2052,8 @@ def write_review(folder, stats, now, name=None):
             "gemini": ({"caps": dict(GEMINI_BUDGET.models), "requests_by_day": GEMINI_BUDGET.history}
                        if GEMINI_BUDGET else None),
             "fields": ["reason", "title", "source", "focus", "category"],
-            "items": list(stats.get("review", {}).values())}
+            "items": list(stats.get("review", {}).values()),
+            **({"sent_links": stats["links"]} if "links" in stats else {})}
     folder.mkdir(parents=True, exist_ok=True)
     (folder / (name or f"{local:%G-W%V}.json")).write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -2244,7 +2245,10 @@ def main(argv=None):
                                  [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)])
     if args.write_review:
         now = datetime.now(timezone.utc)
-        stats = (load_state(state_path) or {}).get("stats") or {}
+        stored = load_state(state_path) or {}
+        stats = dict(stored.get("stats") or {})
+        # Snapshots also list the links of the last three days' sent items, to check where they lead.
+        stats["links"] = {d[2]: k for k, d in (stored.get("decisions") or {}).items() if d and d[0] == "sent"}
         write_review(state_path.parent / "reviews", stats, now, f"snapshot-{now.astimezone(KST):%Y-%m-%d-%H%M}.json")
         log(f"review snapshot: {len(stats.get('review', {}))} items")
         return 0
