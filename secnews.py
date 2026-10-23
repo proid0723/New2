@@ -682,9 +682,12 @@ class GeminiBudget:
         except OSError:
             pass
 
-    def take(self, skip=()):
-        """Count one request and return the model to send it to (not one of skip)."""
-        for model, cap in self.models:
+    def take(self, skip=(), lite_first=False):
+        """Count one request and return the model to send it to (not one of skip). The Flash
+        models' small daily share is kept for the digests' classification: translations and
+        alert checks (lite_first) go to the Lite models first."""
+        order = sorted(self.models, key=lambda m: "lite" not in m[0]) if lite_first else self.models
+        for model, cap in order:
             if model not in skip and self.used.get(model, 0) < cap:
                 self.used[model] = self.used.get(model, 0) + 1
                 today = self.history[self.day]
@@ -718,7 +721,7 @@ DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},
                          {"model": "gemini-flash-lite-latest", "daily": 450}]
 
 
-def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
+def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False):
     """One Gemini request that answers in JSON. Raises on any failure."""
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
@@ -727,7 +730,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
     busy = set()  # models that answered "overloaded" to this request
     while True:
         if GEMINI_BUDGET is not None:
-            model = GEMINI_BUDGET.take(skip=busy)
+            model = GEMINI_BUDGET.take(skip=busy, lite_first=lite_first)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(url, data=body, headers={
             "Content-Type": "application/json", "x-goog-api-key": key, "User-Agent": USER_AGENT})
@@ -768,7 +771,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
 
 def gemini_translate_batch(texts, key, model="gemini-flash-latest", timeout=120):
     """Translate several texts in one Gemini request. Raises on any failure."""
-    out = gemini_json(GEMINI_PROMPT + json.dumps(texts, ensure_ascii=False), key, model, timeout)
+    out = gemini_json(GEMINI_PROMPT + json.dumps(texts, ensure_ascii=False), key, model, timeout, lite_first=True)
     if not isinstance(out, list) or len(out) != len(texts) or not all(isinstance(t, str) and t.strip() for t in out):
         raise ValueError("translation list does not match the input")
     return [t.strip() for t in out]
@@ -835,13 +838,13 @@ Answer only with a JSON array, one object per item in the same order:
 """
 
 
-def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instructions=None):
+def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instructions=None, lite_first=False):
     rows = [{"i": n, "title": it["title"], "summary": short_summary(it)} for n, it in enumerate(items)]
     prompt = ((instructions or CLASSIFY_PROMPT) + "\nSECTORS: " + json.dumps(sectors + ["기타"], ensure_ascii=False)
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
-    out = gemini_json(prompt, key, model, timeout=240)  # 60 items with translations take a while
+    out = gemini_json(prompt, key, model, timeout=240, lite_first=lite_first)  # 60 items with translations take a while
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
     by_i = {r.get("i"): r for r in out if isinstance(r, dict)}
@@ -856,6 +859,7 @@ class GeminiClassifier:
 
     def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=100):
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
+        self.lite_first = False  # set for alert checks, which leave the Flash share to the digests
         self.sectors = list(config.get("sectors", {})) + list(config.get("fallback_sectors", {}))
         self.focus_sectors = list(config.get("focus_sectors", {}))
         self.instructions = config.get("classify_prompt")
@@ -873,7 +877,7 @@ class GeminiClassifier:
             part = head[i:i + self.chunk]
             try:
                 results = gemini_classify(part, self.key, self.model, self.sectors, self.focus_sectors, told,
-                                          self.instructions)
+                                          self.instructions, self.lite_first)
                 for n, r in enumerate(results):
                     d = r.get("dup_of")
                     if isinstance(d, int) and not isinstance(d, bool) and 0 <= d < len(part) and d != n:
@@ -1987,7 +1991,13 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         titles = [it["title"] for it in items if not it["id"].startswith("kev:")] + [r[0] for r in urgent_told]
         items = [it for it in items if not kev_covered(it, titles)]
         if classify and items:
-            items = classify(items, [told_line(r) for r in urgent_told])
+            if hasattr(classify, "lite_first"):
+                classify.lite_first = True
+            try:
+                items = classify(items, [told_line(r) for r in urgent_told])
+            finally:
+                if hasattr(classify, "lite_first"):
+                    classify.lite_first = False
         urgent = trim(sorted([it for it in items if it["score"] >= 3], key=lambda it: -it["score"]),
                       config.get("max_instant_per_run", 5))
         if urgent:

@@ -491,7 +491,7 @@ class RunTests(unittest.TestCase):
                          ("버거킹재팬 회원 정보 유출", d))
         seen_told = []
 
-        def fake(items, key, model, sectors, fsectors, told=(), instructions=None):
+        def fake(items, key, model, sectors, fsectors, told=(), instructions=None, lite_first=False):
             seen_told.append(list(told))
             out = []
             for n, it in enumerate(items):
@@ -1345,6 +1345,15 @@ class GeminiRetryTests(unittest.TestCase):
         finally:
             secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
 
+
+    def test_translations_and_alerts_take_lite_first_leaving_flash_to_digests(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json", [("flash", 2), ("flash-lite", 9)])
+        self.assertEqual(budget.take(lite_first=True), "flash-lite")
+        self.assertEqual(budget.take(), "flash")
+        self.assertEqual(budget.take(), "flash")
+        self.assertEqual(budget.take(), "flash-lite")  # flash used up: digests fall back to lite
 
     def test_per_minute_limit_is_busy_but_a_daily_limit_retires_the_model(self):
         import io
