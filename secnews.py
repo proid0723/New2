@@ -48,7 +48,7 @@ TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 # Actions logs of a public repository are public. There a run prints only warnings, errors and a
 # short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
 QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
-SUMMARY = re.compile(r"^(warning|error|ai models:|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
+SUMMARY = re.compile(r"^(warning|error|ai models:|pre-judged|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
 HELD = []
 
 
