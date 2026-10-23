@@ -560,12 +560,9 @@ def model_tag(model):
     return m.group(0) + ("L" if "Lite" in label else "")
 
 
-CIRCLED = str.maketrans("0123456789L", "⓪①②③④⑤⑥⑦⑧⑨Ⓛ")
-
-
 def model_badge(model):
-    """The AI mark at the end of a boxed title, in circled characters: ③.⑤Ⓛ for 3.5 Flash Lite."""
-    return model_tag(model).translate(CIRCLED)
+    """The AI mark at the end of a boxed title, after a Gemini-like sparkle: ✦3.5L for 3.5 Flash Lite."""
+    return "✦" + model_tag(model)
 
 
 def format_item(item, hide_sector=None, key="sectors"):
@@ -582,7 +579,7 @@ def format_item(item, hide_sector=None, key="sectors"):
         # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
         # the summary is plain text inside it and the details share one line. The box sets articles
         # apart, so the bullet goes.
-        # The AI mark sits at the end of the title, in circled characters, rather than in the details line.
+        # The AI mark sits at the end of the title rather than in the details line.
         badge = f" {model_badge(item['ai_model'])}" if item.get("ai_model") else ""
         lines = [f"{mark}{tags}<b>{title}</b>{badge}"]
         if summary:

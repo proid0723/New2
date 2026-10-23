@@ -1109,9 +1109,9 @@ class LocalizeTests(unittest.TestCase):
             secnews.ITEM_STYLE = saved
         self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
         self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
-        self.assertIn('Airline breach</a></b> ②.⑤\n', out)  # the AI mark ends the title
+        self.assertIn('Airline breach</a></b> ✦2.5\n', out)  # the AI mark ends the title
         self.assertNotIn("🤖", out)
-        self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "③.⑤Ⓛ")
+        self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "✦3.5L")
 
     def test_article_shows_which_ai_judged_it(self):
         self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
