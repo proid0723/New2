@@ -656,11 +656,10 @@ class GeminiBudget:
 
     def __init__(self, path, models):
         self.path, self.models = path, models  # [(model, daily cap), ...] in order of preference
-        try:
-            from zoneinfo import ZoneInfo
-            self.day = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
-        except Exception:
-            self.day = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%d")
+        # Google's free-tier day starts at midnight Pacific *standard* time all year (08:00 UTC,
+        # 17:00 in Korea), not at daylight-saving midnight: counting from 16:00 in summer made the
+        # 16:00 digest's requests hit "used up for today" and retired the Flash models for a day.
+        self.day = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%d")
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -710,7 +709,7 @@ class GeminiBudget:
             n = sum(self.history[d].get(model, 0) for d in recent)
             lines.append(f"  - {model}: {n}회" + (f" / 한도 {cap}" if days == 1 else ""))
         total = sum(sum(self.history[d].values()) for d in recent)
-        return [f"· AI(Gemini) 사용 {total}회" + (" (오늘, 미국 태평양 시간 기준)" if days == 1 else f" (최근 {len(recent)}일)")] + lines
+        return [f"· AI(Gemini) 사용 {total}회" + (" (오늘, 매일 17시 초기화)" if days == 1 else f" (최근 {len(recent)}일)")] + lines
 
 
 GEMINI_BUDGET = None  # set in main()
