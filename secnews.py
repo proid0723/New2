@@ -1897,9 +1897,12 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         if not item["date"] or now - item["date"] > (timedelta(hours=24) if forced else window):
             continue
         key, tkey = item_key(item), title_key(item)
-        if key in seen or tkey in seen or key in checked:
+        # Judged once; a miss waits for the digest. An item that became forced after an earlier
+        # look (the always-urgent list grew) gets one more look under its own mark.
+        mark = "!" + key if forced else key
+        if key in seen or tkey in seen or mark in checked:
             continue
-        checked[key] = ts  # judged once; a miss waits for the digest
+        checked[mark] = ts
         scorer.classify(item)
         text = f"{item['title']} {item.get('summary', '')}".lower()
         # A critical word in the headline (RCE, unauthenticated, CVSS 9…) is enough to ask Gemini,
