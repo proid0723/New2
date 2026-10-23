@@ -763,10 +763,12 @@ GEMINI_BUDGET = None  # set in main()
 # Free tier, October 2026: each model has its own daily quota (Flash models 20 requests a day, Flash
 # Lite 500). Four Flash shares (about 70 a day) cover the digests; Flash Lite is the deep reserve.
 # A model this key cannot use answers 404 and is skipped for the day (logged as a warning).
+# 2.5 Flash comes second: the newest models are the first to be busy for free-tier keys (on
+# 23 October 3.8 and 3.6 answered 503 for hours while 2.5 kept answering).
 DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 Flash
+                         {"model": "gemini-2.5-flash", "daily": 18},
                          {"model": "gemini-3.6-flash", "daily": 18},
                          {"model": "gemini-3-flash-preview", "daily": 18},
-                         {"model": "gemini-2.5-flash", "daily": 18},
                          {"model": "gemini-flash-lite-latest", "daily": 450},  # 3.5 Flash Lite
                          {"model": "gemini-3.1-flash-lite", "daily": 450}]
 
