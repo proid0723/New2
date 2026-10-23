@@ -581,7 +581,8 @@ def model_badge(model):
     return "✦" + model_tag(model)
 
 
-TAP_PAD = "\u2800" * 22  # a blank line that still belongs to the title's link (boxed layout)
+TITLE_TAP_PAD = "\u2800" * 4  # a small linked margin after the title (boxed layout)
+TAP_PAD = "\u2800" * 22  # linked blank line below the title; width depends on the client
 
 
 def format_item(item, hide_sector=None, key="sectors"):
@@ -600,10 +601,10 @@ def format_item(item, hide_sector=None, key="sectors"):
         # apart, so the bullet goes.
         head = f"{mark}{tags}<b>{title}</b>"
         if item["link"]:
-            # A tap beside the link opens Telegram's message menu. The line under the title is part
-            # of the link, in blank Braille cells (Telegram keeps those; it trims plain spaces), so
-            # the tap target is two lines high.
-            pad = html.escape(item.get("display_title", item["title"])) + "\n" + TAP_PAD
+            # Extend the same link slightly to the right and onto the blank line below it.
+            # Braille blanks survive space trimming. Keep the trailing margin short to limit
+            # wrapping; Telegram controls the actual layout and tap area on each device.
+            pad = html.escape(item.get("display_title", item["title"])) + TITLE_TAP_PAD + "\n" + TAP_PAD
             head = f'{mark}{tags}<b><a href="{html.escape(item["link"], quote=True)}">{pad}</a></b>'
         lines = [head]
         if summary:
