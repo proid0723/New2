@@ -1209,9 +1209,16 @@ def page_summary(item, timeout=8):
         if name and content:
             found.setdefault(name.group(1).lower(), content.group(2) if content.group(2) is not None else content.group(3))
     words = [w for w in re.findall(r"\w+", item["title"]) if len(w) >= 3]
+    # Korean spacing and particles vary between headlines and descriptions. Also accept a shared
+    # four-syllable phrase across word spaces, without relying on a generic two-syllable noun.
+    compact_title = re.sub(r"\s+", "", item["title"])
+    phrases = {run[i:i + 4] for run in re.findall(r"[가-힣]{4,}", compact_title)
+               for i in range(len(run) - 3)}
     for key in ("og:description", "twitter:description", "description"):
         text = clean_text(found.get(key, ""))
-        if len(text) >= 30 and any(w[:3] in text for w in words):
+        compact_text = re.sub(r"\s+", "", text)
+        if len(text) >= 30 and (any(w[:3] in text for w in words)
+                                or any(phrase in compact_text for phrase in phrases)):
             return text
     return ""
 

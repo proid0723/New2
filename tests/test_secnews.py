@@ -1245,6 +1245,23 @@ class LocalizeTests(unittest.TestCase):
         finally:
             secnews.urllib.request.urlopen = saved[0]
 
+    def test_page_summary_handles_korean_spacing_without_accepting_generic_descriptions(self):
+        import io
+        from email.message import Message
+        cases = [
+            ("탑승정보유출 확인", "항공 이용자의 탑승 정보 유출 정황이 확인돼 관계 기관이 사실관계를 조사하고 있습니다.", True),
+            ("공항도 뚫렸다…'계정 탈취' 확인", "항공 이용자의 계정 탈취 정황을 확인한 운영사가 이용자 보호 조치를 진행하고 있습니다.", True),
+            ("공항도 뚫렸다…'계정 탈취' 확인", "공항 소식을 전하는 종합 뉴스 사이트입니다. 언제나 다양한 최신 소식을 제공합니다.", False),
+            ("계정탈취 확인", "계정 탈취 확인", False),
+        ]
+        for title, description, accepted in cases:
+            with self.subTest(title=title, description=description):
+                response = io.BytesIO(('<meta property="og:description" content="' + description + '">').encode())
+                response.headers = Message()
+                with mock.patch.object(secnews.urllib.request, "urlopen", return_value=response):
+                    result = secnews.page_summary({"title": title, "link": "https://example.com/article"})
+                self.assertEqual(result, description if accepted else "")
+
     def test_outlet_name_and_byline_are_trimmed(self):
         self.assertEqual(secnews.strip_outlet("[단독] 항공사 고객 예약번호 유출 - 머니투데이", "머니투데이"),
                          "[단독] 항공사 고객 예약번호 유출")
