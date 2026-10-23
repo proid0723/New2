@@ -15,6 +15,7 @@ Values missing from the environment are read from ~/.config/secnews/env
 """
 import argparse
 import base64
+import concurrent.futures
 import fcntl
 import hashlib
 import hmac
@@ -48,7 +49,7 @@ TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 # Actions logs of a public repository are public. There a run prints only warnings, errors and a
 # short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
 QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
-SUMMARY = re.compile(r"^(warning|error|ai models:|pre-judged|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
+SUMMARY = re.compile(r"^(warning|error|ai models:|pre-judged|summaries from|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
 HELD = []
 
 
@@ -1096,9 +1097,67 @@ def make_translator(config):
     return google_translate
 
 
+PAGE_SUMMARIES = False  # fetch missing summaries from the article pages (set in main(); tests stay offline)
+META_DESC = re.compile(r"<meta\b[^>]*>", re.I)
+
+
+def page_summary(item, timeout=8):
+    """The article page's own description (og:description and the like) for an item whose feed
+    sent none, or "". Only text that shares a word with the title: a site's generic slogan is not
+    a summary. Google News links lead to a page of Google's, not the article: skipped."""
+    link = item.get("link") or ""
+    if not link.startswith("http") or "news.google.com" in link:
+        return ""
+    req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko,en;q=0.8"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read(400_000)
+        charset = resp.headers.get_content_charset()
+    if not charset:
+        m = re.search(rb"<meta[^>]+charset=[\"']?([\w-]+)", raw[:5000], re.I)
+        charset = m.group(1).decode() if m else "utf-8"
+    try:
+        page = raw.decode(charset, "replace")
+    except LookupError:
+        page = raw.decode("utf-8", "replace")
+    found = {}
+    for tag in META_DESC.findall(page[:200_000]):
+        name = re.search(r"""(?:property|name)\s*=\s*["']([^"']+)""", tag, re.I)
+        content = re.search(r"""content\s*=\s*("([^"]*)"|'([^']*)')""", tag, re.I | re.S)
+        if name and content:
+            found.setdefault(name.group(1).lower(), content.group(2) if content.group(2) is not None else content.group(3))
+    for key in ("og:description", "twitter:description", "description"):
+        text = clean_text(found.get(key, ""))
+        words = [w for w in re.findall(r"\w+", item["title"]) if len(w) >= 3]
+        if len(text) >= 30 and any(w[:3] in text for w in words):
+            return text
+    return ""
+
+
+def fill_summaries(items):
+    """Feeds that send only the title (or the outlet's name) leave articles without a summary:
+    take one from the article pages instead, a few at a time."""
+    todo = [it for it in items if not short_summary(it) and "display_summary" not in it]
+    if not PAGE_SUMMARIES or not todo:
+        return
+
+    def one(item):
+        try:
+            return item, page_summary(item)
+        except Exception:
+            return item, ""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        got = 0
+        for item, text in pool.map(one, todo):
+            if text:
+                item["summary"], got = text, got + 1
+    log(f"summaries from article pages: {got} of {len(todo)}")
+
+
 def localize(items, translate):
     """Fill display_title/display_summary, translating English text to Korean.
     The original title stays on the item and the link still points at the original article."""
+    fill_summaries(items)
+
     def pending(item):
         """Texts still in English after the classifier's own translations."""
         title, summary = item["title"], short_summary(item)
@@ -2305,7 +2364,8 @@ def main(argv=None):
     config = json.loads(args.config.read_text(encoding="utf-8"))
     state_path = Path(os.environ.get("SECNEWS_STATE") or DEFAULT_STATE).expanduser()
     translator = make_translator(config)
-    global GEMINI_BUDGET, ITEM_STYLE, LITE_THINKING
+    global GEMINI_BUDGET, ITEM_STYLE, LITE_THINKING, PAGE_SUMMARIES
+    PAGE_SUMMARIES = bool(config.get("page_summaries", True)) and not os.environ.get("SECNEWS_OFFLINE")
     LITE_THINKING = str(config.get("lite_thinking", LITE_THINKING)).strip().lower() or "off"
     ITEM_STYLE = os.environ.get("SECNEWS_ITEM_STYLE", "").strip() or config.get("item_style", "plain")
     GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),

@@ -12,6 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import secnews  # noqa: E402
 
+os.environ["SECNEWS_OFFLINE"] = "1"  # main() never fetches article pages in tests
+
 NOW = datetime(2026, 10, 15, 3, 0, tzinfo=timezone.utc)
 
 RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1112,6 +1114,45 @@ class LocalizeTests(unittest.TestCase):
         self.assertIn('Airline breach</a></b> ✦2.5\n', out)  # the AI mark ends the title
         self.assertNotIn("🤖", out)
         self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "✦3.5L")
+
+    def test_missing_summary_comes_from_the_article_page(self):
+        import io
+
+        class Resp(io.BytesIO):
+            headers = type("H", (), {"get_content_charset": staticmethod(lambda: None)})()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        page = ('<html><head><meta charset="euc-kr"><meta name="description" content="Example Daily, the news site">'
+                '<meta property="og:description" content="Hospital network attack attempts passed 3,000 this year, '
+                'the agency said."></head></html>').encode("euc-kr")
+        asked = []
+
+        def fake(req, timeout=0):
+            asked.append(req.full_url)
+            return Resp(page)
+        items = [{"title": "Hospital network attacks pass 3,000", "summary": "Hospital network attacks pass 3,000 Example",
+                  "link": "https://example.com/a"},
+                 {"title": "Generic headline here", "summary": "", "link": "https://news.google.com/rss/articles/x"},
+                 {"title": "Has a summary", "summary": "A long enough summary from the feed itself.", "link": "https://e/b"}]
+        saved = secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES
+        secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES = fake, True
+        try:
+            secnews.fill_summaries(items)
+        finally:
+            secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES = saved
+        self.assertEqual(asked, ["https://example.com/a"])  # Google News and items with a summary are left alone
+        self.assertEqual(secnews.short_summary(items[0]), "Hospital network attack attempts passed 3,000 this year, the agency said.")
+        self.assertEqual(secnews.short_summary(items[1]), "")
+        page = b'<meta property="og:description" content="Example Daily, the trusted news site for everyone">'
+        secnews.urllib.request.urlopen = fake
+        try:
+            self.assertEqual(secnews.page_summary({"title": "Hospital network attacks", "link": "https://e/c"}), "")
+        finally:
+            secnews.urllib.request.urlopen = saved[0]
 
     def test_article_shows_which_ai_judged_it(self):
         self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
