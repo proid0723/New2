@@ -610,6 +610,7 @@ def format_item(item, hide_sector=None, key="sectors"):
             if not item["link"]:
                 lines.append("")
             lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
+            lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
             meta += f" · {model_badge(item['ai_model'])}"
