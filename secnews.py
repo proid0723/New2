@@ -1101,12 +1101,41 @@ PAGE_SUMMARIES = False  # fetch missing summaries from the article pages (set in
 META_DESC = re.compile(r"<meta\b[^>]*>", re.I)
 
 
+def google_news_target(link, timeout=8):
+    """The article behind a Google News RSS link (news.google.com/rss/articles/<id>), or "".
+    Google's page holds a signature for the id; Google's own page script trades the two for the
+    address, and so does this. Two small requests; any change on Google's side just gives ""."""
+    m = re.search(r"news\.google\.com/(?:rss/)?articles/([\w-]+)", link)
+    if not m:
+        return ""
+    gid = m.group(1)
+    page = fetch(f"https://news.google.com/rss/articles/{gid}", timeout).decode("utf-8", "replace")
+    sg, ts = re.search(r'data-n-a-sg="([^"]+)"', page), re.search(r'data-n-a-ts="([^"]+)"', page)
+    if not sg or not ts:
+        return ""
+    req = ('["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],'
+           '"X","X",1,[1,1,1],1,1,null,0,0,null,0],' + json.dumps(gid) + "," + ts.group(1) + "," + json.dumps(sg.group(1)) + "]")
+    body = "f.req=" + urllib.parse.quote(json.dumps([[["Fbv4je", req, None, "generic"]]]))
+    post = urllib.request.Request("https://news.google.com/_/DotsSplashUi/data/batchexecute", data=body.encode(),
+                                  headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                                           "User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(post, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8", "replace")
+    try:
+        url = json.loads(json.loads(text.split("\n\n", 1)[1])[0][2])[1]
+    except (IndexError, TypeError, ValueError):
+        return ""
+    return url if isinstance(url, str) and url.startswith("http") and "news.google.com" not in url else ""
+
+
 def page_summary(item, timeout=8):
     """The article page's own description (og:description and the like) for an item whose feed
     sent none, or "". Only text that shares a word with the title: a site's generic slogan is not
-    a summary. Google News links lead to a page of Google's, not the article: skipped."""
+    a summary. Google News links are first traded for the article's own address."""
     link = item.get("link") or ""
-    if not link.startswith("http") or "news.google.com" in link:
+    if "news.google.com" in link:
+        link = google_news_target(link, timeout)
+    if not link.startswith("http"):
         return ""
     req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko,en;q=0.8"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -1125,9 +1154,9 @@ def page_summary(item, timeout=8):
         content = re.search(r"""content\s*=\s*("([^"]*)"|'([^']*)')""", tag, re.I | re.S)
         if name and content:
             found.setdefault(name.group(1).lower(), content.group(2) if content.group(2) is not None else content.group(3))
+    words = [w for w in re.findall(r"\w+", item["title"]) if len(w) >= 3]
     for key in ("og:description", "twitter:description", "description"):
         text = clean_text(found.get(key, ""))
-        words = [w for w in re.findall(r"\w+", item["title"]) if len(w) >= 3]
         if len(text) >= 30 and any(w[:3] in text for w in words):
             return text
     return ""
@@ -1139,18 +1168,21 @@ def fill_summaries(items):
     todo = [it for it in items if not short_summary(it) and "display_summary" not in it]
     if not PAGE_SUMMARIES or not todo:
         return
+    errors = []
 
     def one(item):
         try:
             return item, page_summary(item)
-        except Exception:
+        except Exception as e:
+            errors.append(f"{type(e).__name__}: {e}"[:80])
             return item, ""
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         got = 0
         for item, text in pool.map(one, todo):
             if text:
                 item["summary"], got = text, got + 1
-    log(f"summaries from article pages: {got} of {len(todo)}")
+    log(f"summaries from article pages: {got} of {len(todo)}"
+        + (f" ({len(errors)} failed, e.g. {errors[0]})" if errors else ""))
 
 
 def localize(items, translate):

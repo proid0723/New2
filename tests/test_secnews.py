@@ -1144,7 +1144,8 @@ class LocalizeTests(unittest.TestCase):
             secnews.fill_summaries(items)
         finally:
             secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES = saved
-        self.assertEqual(asked, ["https://example.com/a"])  # Google News and items with a summary are left alone
+        # Items with a summary are left alone; the Google News page here carries no signature.
+        self.assertEqual(sorted(asked), ["https://example.com/a", "https://news.google.com/rss/articles/x"])
         self.assertEqual(secnews.short_summary(items[0]), "Hospital network attack attempts passed 3,000 this year, the agency said.")
         self.assertEqual(secnews.short_summary(items[1]), "")
         page = b'<meta property="og:description" content="Example Daily, the trusted news site for everyone">'
@@ -1153,6 +1154,28 @@ class LocalizeTests(unittest.TestCase):
             self.assertEqual(secnews.page_summary({"title": "Hospital network attacks", "link": "https://e/c"}), "")
         finally:
             secnews.urllib.request.urlopen = saved[0]
+
+    def test_google_news_link_is_traded_for_the_article_address(self):
+        import io
+        sent = []
+
+        def fake(req, timeout=0):
+            url = req if isinstance(req, str) else req.full_url
+            sent.append(url)
+            if url.endswith("/rss/articles/CBMiAbc"):
+                return io.BytesIO(b'<div data-n-a-sg="SIG1" data-n-a-ts="1761200000"></div>')
+            body = urllib.parse.unquote(req.data.decode())
+            self.assertIn('"CBMiAbc",1761200000,"SIG1"', body.replace("\\", ""))
+            inner = json.dumps(["garturlres", "https://example.com/news/1", 1])
+            return io.BytesIO((")]}'\n\n" + json.dumps([["wrb.fr", "Fbv4je", inner, None, None, None, "generic"]])).encode())
+        import urllib.parse
+        saved = secnews.urllib.request.urlopen
+        secnews.urllib.request.urlopen = fake
+        try:
+            self.assertEqual(secnews.google_news_target("https://news.google.com/rss/articles/CBMiAbc?oc=5"),
+                             "https://example.com/news/1")
+        finally:
+            secnews.urllib.request.urlopen = saved
 
     def test_article_shows_which_ai_judged_it(self):
         self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
