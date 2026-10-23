@@ -600,14 +600,13 @@ def format_item(item, hide_sector=None, key="sectors"):
         # apart, so the bullet goes.
         head = f"{mark}{tags}<b>{title}</b>"
         if item["link"]:
-            # Keep the trailing spaces and the blank row in the same link as the title.
+            # Extend the end of the title with spaces in the same link, without forcing a new row.
             # This is a client-dependent layout attempt, not a full-width button.
-            padded = html.escape(item.get("display_title", item["title"])) + TITLE_LINK_SPACES + "\n" + TITLE_LINK_SPACES
+            padded = html.escape(item.get("display_title", item["title"])) + TITLE_LINK_SPACES
             head = f'{mark}{tags}<b><a href="{html.escape(item["link"], quote=True)}">{padded}</a></b>'
         lines = [head]
         if summary:
-            if not item["link"]:
-                lines.append("")
+            lines.append("")
             lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
             lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")
