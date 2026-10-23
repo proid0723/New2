@@ -1195,11 +1195,12 @@ class LocalizeTests(unittest.TestCase):
             out = secnews.format_item(it, "x")
         finally:
             secnews.ITEM_STYLE = saved
-        self.assertTrue(out.startswith("<blockquote>") and out.endswith("</blockquote>"))
+        self.assertTrue(out.startswith('<b><a href="https://e/x">') and out.endswith("</blockquote>"))
         self.assertEqual(out.count("<blockquote>"), 1)  # quotes cannot nest
         self.assertIn("📰 S · ✦2.5</blockquote>", out)  # the AI mark ends the details line
-        self.assertIn('<a href="https://e/x"><b>Airline breach' + " " * 64 + '</b>\n\n<i>Booking details of customers were exposed.</i></a>\n\n📰 S', out)
-        self.assertEqual(out.count('<a href='), 1)  # one article link covers title and summary, not source
+        self.assertIn('<b><a href="https://e/x">Airline breach' + " " * 90 + '</a></b>\n<blockquote><i>Booking details of customers were exposed.</i>\n\n📰 S', out)
+        self.assertEqual(out.count('<a href='), 1)  # only the headline links to the article
+        self.assertNotIn('<a ', out.split('<blockquote>', 1)[1])
         self.assertNotIn("\u2800", out)  # padding uses ordinary spaces, not Braille blanks
         self.assertNotIn("🤖", out)
         self.assertEqual(secnews.model_badge("gemini-3.5-flash-lite"), "✦3.5L")

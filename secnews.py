@@ -613,7 +613,7 @@ def model_badge(model):
     return "✦" + model_tag(model)
 
 
-TITLE_LINK_SPACES = " " * 64  # plain linked spaces; Telegram controls their displayed width
+TITLE_LINK_SPACES = " " * 90  # plain linked spaces; Telegram controls their displayed width
 
 
 def format_item(item, hide_sector=None, key="sectors"):
@@ -627,22 +627,15 @@ def format_item(item, hide_sector=None, key="sectors"):
     summary = item["display_summary"] if "display_summary" in item else short_summary(item)
     source = html.escape(item["source"])  # the title already links to the article
     if ITEM_STYLE == "quote":
-        # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
-        # the summary is italic inside it and the details share one line. The box sets articles
-        # apart, so the bullet goes.
+        # Keep the linked headline above the quote; summary and source remain unlinked inside it.
         padded = html.escape(item.get("display_title", item["title"]))
         if item["link"]:
             padded += TITLE_LINK_SPACES
-        lines = [f"<b>{padded}</b>"]
+            padded = f'<a href="{html.escape(item["link"], quote=True)}">{padded}</a>'
+        heading = f"{mark}{tags}<b>{padded}</b>"
+        lines = []
         if summary:
-            lines.append("")
             lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
-        content = "\n".join(lines)
-        if item["link"]:
-            # Link title, padding and summary together; Telegram controls whitespace hit areas.
-            content = f'<a href="{html.escape(item["link"], quote=True)}">{content}</a>'
-        lines = [f"{mark}{tags}{content}"]
-        if summary:
             lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
@@ -650,7 +643,7 @@ def format_item(item, hide_sector=None, key="sectors"):
         elif item.get("keyword_only"):
             meta += " · 🔑 키워드"
         lines.append(meta)
-        return "<blockquote>" + "\n".join(lines) + "</blockquote>"
+        return heading + "\n<blockquote>" + "\n".join(lines) + "</blockquote>"
     if summary:
         lines.append(f"<blockquote>{html.escape(summary)}</blockquote>")
     meta = f"📰 출처: {source}" + (f" · {when}" if when else "")
