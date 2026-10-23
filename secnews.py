@@ -581,6 +581,9 @@ def model_badge(model):
     return "✦" + model_tag(model)
 
 
+TITLE_LINK_SPACES = " " * 64  # plain linked spaces; Telegram controls their displayed width
+
+
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
     title = html.escape(item.get("display_title", item["title"]))
@@ -596,9 +599,15 @@ def format_item(item, hide_sector=None, key="sectors"):
         # the summary is plain text inside it and the details share one line. The box sets articles
         # apart, so the bullet goes.
         head = f"{mark}{tags}<b>{title}</b>"
+        if item["link"]:
+            # Keep the trailing spaces and the blank row in the same link as the title.
+            # This is a client-dependent layout attempt, not a full-width button.
+            padded = html.escape(item.get("display_title", item["title"])) + TITLE_LINK_SPACES + "\n" + TITLE_LINK_SPACES
+            head = f'{mark}{tags}<b><a href="{html.escape(item["link"], quote=True)}">{padded}</a></b>'
         lines = [head]
         if summary:
-            lines.append("")
+            if not item["link"]:
+                lines.append("")
             lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
             lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")
