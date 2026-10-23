@@ -714,11 +714,15 @@ class GeminiBudget:
 
 
 GEMINI_BUDGET = None  # set in main()
-# Free tier, October 2026: Flash models 20 requests a day each, Flash Lite 500. The Flash shares
-# cover the hourly digests with room for a manual test; Flash Lite is the deep reserve.
-DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},
+# Free tier, October 2026: each model has its own daily quota (Flash models 20 requests a day, Flash
+# Lite 500). Four Flash shares (about 70 a day) cover the digests; Flash Lite is the deep reserve.
+# A model this key cannot use answers 404 and is skipped for the day (logged as a warning).
+DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 Flash
                          {"model": "gemini-3.6-flash", "daily": 18},
-                         {"model": "gemini-flash-lite-latest", "daily": 450}]
+                         {"model": "gemini-3-flash", "daily": 18},
+                         {"model": "gemini-2.5-flash", "daily": 18},
+                         {"model": "gemini-flash-lite-latest", "daily": 450},  # 3.5 Flash Lite
+                         {"model": "gemini-3.1-flash-lite", "daily": 450}]
 
 
 def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False):
@@ -752,7 +756,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
             # model here. Either way skip the model for the rest of the day and ask the next one.
             if GEMINI_BUDGET is not None and e.code in (404, 429):
-                log(f"Gemini {model}: HTTP {e.code}; switching to the next model for today")
+                log(f"{'warning: ' if e.code == 404 else ''}Gemini {model}: HTTP {e.code}; switching to the next model for today")
                 GEMINI_BUDGET.exhaust(model)
                 continue
             # 500/502/503/504: Google is overloaded right now. Another model may answer (up to all
