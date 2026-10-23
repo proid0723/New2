@@ -628,18 +628,21 @@ def format_item(item, hide_sector=None, key="sectors"):
     source = html.escape(item["source"])  # the title already links to the article
     if ITEM_STYLE == "quote":
         # Telegram has no bordered boxes; a quote per article is the closest. Quotes cannot nest, so
-        # the summary is plain text inside it and the details share one line. The box sets articles
+        # the summary is italic inside it and the details share one line. The box sets articles
         # apart, so the bullet goes.
-        head = f"{mark}{tags}<b>{title}</b>"
+        padded = html.escape(item.get("display_title", item["title"]))
         if item["link"]:
-            # Extend the end of the title with spaces in the same link, without forcing a new row.
-            # This is a client-dependent layout attempt, not a full-width button.
-            padded = html.escape(item.get("display_title", item["title"])) + TITLE_LINK_SPACES
-            head = f'{mark}{tags}<b><a href="{html.escape(item["link"], quote=True)}">{padded}</a></b>'
-        lines = [head]
+            padded += TITLE_LINK_SPACES
+        lines = [f"<b>{padded}</b>"]
         if summary:
             lines.append("")
             lines.append(f"<i>{html.escape(summary)}</i>")  # set apart from the title, in italics
+        content = "\n".join(lines)
+        if item["link"]:
+            # Link title, padding and summary together; Telegram controls whitespace hit areas.
+            content = f'<a href="{html.escape(item["link"], quote=True)}">{content}</a>'
+        lines = [f"{mark}{tags}{content}"]
+        if summary:
             lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
