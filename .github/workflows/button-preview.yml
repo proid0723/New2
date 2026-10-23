@@ -12,6 +12,7 @@ on:
           - all_links_ko
           - outside_title_ko
           - outside_plain_summary_ko
+          - outside_padded_title_ko
 permissions:
   contents: read
 jobs:

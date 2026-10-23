@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import secnews
 
 
-def linked_article(item, outside_title=False, link_summary=True):
+def linked_article(item, outside_title=False, link_summary=True, pad_title=False):
     title = html.escape(item["title"]) + secnews.TITLE_LINK_SPACES
     summary = secnews.short_summary(item)
     # One link includes the title, separating whitespace and italic summary.
@@ -21,7 +21,8 @@ def linked_article(item, outside_title=False, link_summary=True):
     date = item.get("date")
     when = " · " + date.astimezone(secnews.KST).strftime("%m-%d %H:%M") if date else ""
     if outside_title:
-        heading = f'<b><a href="{url}">{html.escape(item["title"])}</a></b>'
+        outside_text = html.escape(item["title"]) + (secnews.TITLE_LINK_SPACES if pad_title else "")
+        heading = f'<b><a href="{url}">{outside_text}</a></b>'
         linked_summary = f'<a href="{url}"><i>{html.escape(summary)}</i></a>' if summary else ""
         if summary and not link_summary:
             linked_summary = f'<i>{html.escape(summary)}</i>'
@@ -39,7 +40,7 @@ def main():
         raise SystemExit("Administrator credentials are required; no fallback recipients.")
     config = json.loads(Path(os.environ["SECNEWS_CONFIG"]).read_text())
     style = os.environ.get("PREVIEW_STYLE", "buttons")
-    korean = style in ("all_links_ko", "outside_title_ko", "outside_plain_summary_ko")
+    korean = style in ("all_links_ko", "outside_title_ko", "outside_plain_summary_ko", "outside_padded_title_ko")
     items = []
     feeds = config["feeds"]
     if korean:
@@ -65,7 +66,12 @@ def main():
             break
     if not items:
         raise SystemExit("No articles available for the preview.")
-    if style == "outside_plain_summary_ko":
+    if style == "outside_padded_title_ko":
+        text = "<b>🧪 박스 밖 제목에 공백 64개를 넣은 시안</b>\n\n"
+        text += "\n\n".join(linked_article(it, outside_title=True, link_summary=False, pad_title=True) for it in items)
+        text += "\n\n제목 링크 안에 일반 스페이스 64개를 추가했습니다. 요약과 출처는 링크 없는 글자입니다. 공백의 표시와 클릭 범위는 앱에 따라 다를 수 있습니다. 운영 화면은 아직 변경하지 않았습니다."
+        markup = None
+    elif style == "outside_plain_summary_ko":
         text = "<b>🧪 요약 링크를 뺀 시안</b>\n\n"
         text += "\n\n".join(linked_article(it, outside_title=True, link_summary=False) for it in items)
         text += "\n\n제목만 원문 링크입니다. 박스 안 요약과 출처는 일반 글자입니다. RSS 요약으로 만든 시안이며 운영 화면은 아직 변경하지 않았습니다."
