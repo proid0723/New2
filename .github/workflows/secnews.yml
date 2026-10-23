@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The only package: cryptography, for the subscriber file's AES-256-GCM. Exact files only.
       - name: Install cryptography
         run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
@@ -72,10 +72,10 @@ jobs:
       # (read-only access to <owner>/New2_config). The public repository has no feeds.json.
       HAS_PRIVATE_CONFIG: ${{ secrets.CONFIG_REPO_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Fetch private settings
         if: env.HAS_PRIVATE_CONFIG == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/New2_config
           token: ${{ secrets.CONFIG_REPO_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
       # What was already sent lives in the Actions cache between runs. Each run saves a new
       # entry; restore-keys picks the newest one.
       - name: Restore sent-item state
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .state
           key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
@@ -202,7 +202,7 @@ jobs:
           echo "::warning::Could not push the weekly review file"
       - name: Save sent-item state
         if: success() && !(inputs.test_me && !inputs.scheduled)
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: .state
           key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
@@ -215,7 +215,7 @@ jobs:
     permissions:
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check that the timer still runs
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -230,9 +230,9 @@ jobs:
     env:
       SECNEWS_STATE: ${{ github.workspace }}/.state/seen.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Restore subscriber list
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .state
           key: secnews-state-${{ github.run_id }}
