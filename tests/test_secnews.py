@@ -1155,6 +1155,15 @@ class LocalizeTests(unittest.TestCase):
         finally:
             secnews.urllib.request.urlopen = saved[0]
 
+    def test_outlet_name_and_byline_are_trimmed(self):
+        self.assertEqual(secnews.strip_outlet("[단독] 항공사 고객 예약번호 유출 - 머니투데이", "머니투데이"),
+                         "[단독] 항공사 고객 예약번호 유출")
+        self.assertEqual(secnews.strip_outlet("Airline breach - Reuters", "Example"), "Airline breach - Reuters")
+        for text in ("현대경제신문 김성훈 기자 | 랜섬웨어 조직이 해운사 내부 업무자료를 다크웹에 공개했다.",
+                     "[서울=뉴스핌] 송주원 기자 = 랜섬웨어 조직이 해운사 내부 업무자료를 다크웹에 공개했다."):
+            self.assertEqual(secnews.short_summary({"title": "x", "summary": text}),
+                             "랜섬웨어 조직이 해운사 내부 업무자료를 다크웹에 공개했다.")
+
     def test_twice_escaped_html_in_a_feed_is_not_shown_as_text(self):
         self.assertEqual(secnews.clean_text('&lt;center&gt; &lt;img src="https://e/x.jpg"&gt; &lt;/center&gt;Police will track them.'),
                          "Police will track them.")

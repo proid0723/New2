@@ -529,9 +529,22 @@ def save_state(path, seen, now, recent=None, feed_failures=None, last_digest=Non
 FEED_FOOTER = re.compile(r"\s*(The post .*? appeared first on .*|Continue reading.*|Read more.*)$", re.I | re.S)
 
 
+def strip_outlet(title, source):
+    """Headlines that end in their outlet's name ("... - 머니투데이", "... | 보안뉴스"): the
+    details line names the outlet already."""
+    for sep in (" - ", " | ", " : "):
+        if source and title.endswith(sep + source) and len(title) > len(sep + source) + 5:
+            return title[: -len(sep + source)].rstrip()
+    return title
+
+
+# A reporter's byline opening a Korean article: "현대경제신문 김성훈 기자 | ", "[서울=뉴스핌] 송주원 기자 = ".
+BYLINE = re.compile(r"^\s*(?:\[[^\]]{1,20}\]\s*)?(?:[\w·]{2,12}\s+)?[가-힣]{2,4}\s?(?:기자|특파원)\s*[|ㅣ=:]\s*")
+
+
 def short_summary(item, limit=140):
     """First sentence or so of the feed's own description, or "" if it adds nothing."""
-    text = FEED_FOOTER.sub("", item.get("summary") or "").strip()
+    text = BYLINE.sub("", FEED_FOOTER.sub("", item.get("summary") or "").strip())
     title = item["title"].strip()
     if text.startswith(title):
         text = text[len(title):].lstrip(" :-–—")
@@ -1727,6 +1740,7 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
             parser = {"rss": parse_feed, "cisa_kev": parse_kev}.get(kind) or PARSERS[kind]
             got = [it for it in parser(raw, feed["name"]) if not blocked_outlet(it, blocked)]
             for it in got:
+                it["title"] = strip_outlet(it["title"], it.get("source", ""))
                 it["security_only"] = feed.get("security_only", False)
                 it["min_score"] = feed.get("min_score")
                 it["focus_only"] = feed.get("focus_only", False)
