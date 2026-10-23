@@ -1462,6 +1462,29 @@ class GeminiRetryTests(unittest.TestCase):
         finally:
             secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen = saved
 
+    def test_two_busy_flash_models_send_the_request_to_lite(self):
+        import io
+        import urllib.error
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json",
+                                      [("flash-a", 5), ("flash-b", 5), ("flash-c", 5), ("flash-lite-a", 9)])
+        asked = []
+
+        def fake(req, timeout=0):
+            model = req.full_url.split("/models/")[1].split(":")[0]
+            asked.append(model)
+            if "lite" not in model:
+                raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, None)
+            return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": "[3]"}]}}]}).encode())
+        saved = secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep
+        secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = budget, fake, lambda s: None
+        try:
+            self.assertEqual(secnews.gemini_json("p", "k"), [3])
+            self.assertEqual(asked, ["flash-a", "flash-b", "flash-lite-a"])  # flash-c is not tried in vain
+        finally:
+            secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
+
     def test_a_model_that_times_out_hands_the_request_to_another(self):
         import io
         d = tempfile.TemporaryDirectory()

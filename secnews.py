@@ -752,6 +752,16 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }).encode()
     busy = set()  # models that answered "overloaded" to this request
+
+    def turned_away(model):
+        """Note a busy model. Google counts turned-away requests against the day's quota too, and when
+        two Flash models are busy the others usually are as well: then this request goes to Lite."""
+        busy.add(model)
+        if (GEMINI_BUDGET is not None and sum(1 for m in busy if "lite" not in m) >= 2
+                and any("lite" in m and GEMINI_BUDGET.used.get(m, 0) < cap and m not in busy
+                        for m, cap in GEMINI_BUDGET.models)):
+            busy.update(m for m, _ in GEMINI_BUDGET.models if "lite" not in m)
+
     while True:
         if GEMINI_BUDGET is not None:
             model = GEMINI_BUDGET.take(skip=busy, lite_first=lite_first)
@@ -775,7 +785,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 if not spare:
                     raise  # every model is busy this minute: never retire one for the day over it
                 log(f"warning: Gemini {model}: per-minute limit; trying another model")
-                busy.add(model)
+                turned_away(model)
                 continue
             # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
             # model here. Either way skip the model for the rest of the day and ask the next one.
@@ -787,7 +797,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             # the models are tried); the busy one stays available for later requests.
             if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and spare:
                 log(f"warning: Gemini {model}: HTTP {e.code}; trying another model")
-                busy.add(model)
+                turned_away(model)
                 time.sleep(3)
                 continue
             raise
@@ -795,7 +805,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             # No answer in time (an overloaded model can sit on a request): ask another model.
             if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
                 log(f"warning: Gemini {model}: {e}; trying another model")
-                busy.add(model)
+                turned_away(model)
                 continue
             raise
         try:
@@ -804,7 +814,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
         except (KeyError, IndexError, TypeError, ValueError) as e:
             if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
                 log(f"warning: Gemini {model}: unusable answer ({e}); trying another model")
-                busy.add(model)
+                turned_away(model)
                 continue
             raise
         # The exact model behind an alias such as gemini-flash-latest, for the article's AI mark.
