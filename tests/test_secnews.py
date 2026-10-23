@@ -1155,6 +1155,10 @@ class LocalizeTests(unittest.TestCase):
         finally:
             secnews.urllib.request.urlopen = saved[0]
 
+    def test_twice_escaped_html_in_a_feed_is_not_shown_as_text(self):
+        self.assertEqual(secnews.clean_text('&lt;center&gt; &lt;img src="https://e/x.jpg"&gt; &lt;/center&gt;Police will track them.'),
+                         "Police will track them.")
+
     def test_google_news_link_is_traded_for_the_article_address(self):
         import io
         sent = []

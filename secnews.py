@@ -96,6 +96,8 @@ def _text(el):
 
 def clean_text(s):
     s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    # Some feeds escape their HTML twice (&lt;img src=...&gt;): after unescaping, those are tags too.
+    s = re.sub(r"<[^>]*>|<(?:img|center|a|p|br|div|span|figure)\b[^>]*$", " ", s, flags=re.I)
     return re.sub(r"\s+", " ", s).strip()
 
 
