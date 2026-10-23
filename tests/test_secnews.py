@@ -972,6 +972,15 @@ class LocalizeTests(unittest.TestCase):
         self.assertEqual(calls["google"], ["Zero-day exploited"])
         self.assertEqual(items[0]["display_title"], "구글:Zero-day exploited")
 
+    def test_article_shows_which_ai_judged_it(self):
+        self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
+        self.assertEqual(secnews.model_label("gemini-3.5-flash-lite-preview-09-2026"), "Gemini 3.5 Flash Lite Preview")
+        it = {"title": "Airline breach", "summary": "", "link": "https://e/x", "source": "S", "date": None,
+              "score": 2, "ai_model": "gemini-3.6-flash"}
+        self.assertIn("🤖 Gemini 3.6 Flash", secnews.format_item(it))
+        it.pop("ai_model")
+        self.assertNotIn("🤖", secnews.format_item(it))
+
     def test_korean_item_is_not_marked_as_translated(self):
         it = {"title": "[단독] 공항 관제망 사이버공격 5년간 7.5만건", "summary": "", "link": "https://e/k",
               "title_ko": "Airport control network cyberattacks: 75,000 in five years", "summary_ko": ""}

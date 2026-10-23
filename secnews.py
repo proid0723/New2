@@ -530,6 +530,14 @@ def short_summary(item, limit=140):
     return text
 
 
+def model_label(model):
+    """gemini-3.8-flash-lite -> Gemini 3.8 Flash Lite (the AI that judged an article)."""
+    name = re.sub(r"^models/", "", model).replace("-latest", "")
+    name = re.sub(r"(-\d{2})+-\d{4}$|-\d{4}(-\d{2})+$|-\d{3,}$", "", name)  # release dates
+    words = name.split("-")
+    return " ".join(w.capitalize() if w.isalpha() else w for w in words)
+
+
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
     title = html.escape(item.get("display_title", item["title"]))
@@ -546,6 +554,8 @@ def format_item(item, hide_sector=None, key="sectors"):
     if item.get("translated"):
         # No link to Google's translated copy: its proxy (translate.goog) is blocked in Korea.
         meta += " · 🌐 영문 기사 (제목·요약 번역)"
+    if item.get("ai_model"):
+        meta += f" · 🤖 {model_label(item['ai_model'])}"
     lines.append(meta)
     return "\n".join(lines)
 
@@ -750,7 +760,9 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
                 time.sleep(3)
                 continue
             raise
-        log(f"Gemini request answered by {model}")
+        # The exact model behind an alias such as gemini-flash-latest, for the article's AI mark.
+        gemini_json.last_model = data.get("modelVersion") or model
+        log(f"Gemini request answered by {gemini_json.last_model}")
         return json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
 
 
@@ -868,6 +880,7 @@ class GeminiClassifier:
                         results[max(n, d)]["duplicate"] = True  # the better-ranked report stays
                 for it, r in zip(part, results):
                     judged[id(it)] = r
+                    it["ai_model"] = getattr(gemini_json, "last_model", None) or self.model
             except Exception as e:
                 log(f"warning: Gemini classification failed ({e}); keeping keyword results")
                 failed = self.failed = True
