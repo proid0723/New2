@@ -853,7 +853,7 @@ class GeminiClassifier:
                 dups += 1
                 it["drop_reason"] = "gemini_dup"
                 continue
-            if not r.get("relevant") or (it.get("focus_only") and not focus):
+            if not it.get("forced") and (not r.get("relevant") or (it.get("focus_only") and not focus)):
                 dropped += 1
                 it["drop_reason"] = "gemini_irrelevant" if not r.get("relevant") else "gemini_focus_only"
                 continue
@@ -865,7 +865,7 @@ class GeminiClassifier:
                     text = r[field].strip()
                     it[field] = text if len(text) <= cap else text[:cap].rstrip() + "…"
             it["focus"] = focus
-            it["score"] = max(it["score"], 3) if r.get("urgent") else min(it["score"], 2)
+            it["score"] = max(it["score"], 3) if r.get("urgent") or it.get("forced") else min(it["score"], 2)
             sector, fsector = r.get("sector"), r.get("focus_sector")
             if sector in self.sectors or sector == OTHER_SECTOR:
                 it["sectors"] = [] if sector == OTHER_SECTOR else [sector]
@@ -1435,6 +1435,7 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
                 it["min_score"] = feed.get("min_score")
                 it["focus_only"] = feed.get("focus_only", False)
                 it["instant_all"] = feed.get("instant") == "all"
+                it["instant_always"] = feed.get("instant") == "always"
             log(f"{feed_label(feed, n)}: {len(got)} items")
             if counts is not None:
                 counts[str(n)] = len(got)
@@ -1462,6 +1463,14 @@ def similar(a, b, threshold=0.45):
 
 def item_cves(item):
     return {c.upper() for c in CVE_RE.findall(f"{item['title']} {item.get('summary', '')}")}
+
+
+def mark_forced(item, always):
+    """Items the admin always wants as alerts: from a feed marked "instant": "always", or naming
+    one of keywords.always_urgent. Only duplicates keep them out."""
+    text = f"{item['title']} {item.get('summary', '')}".lower()
+    item["forced"] = bool(item.get("instant_always") or any(r.search(text) for r in always))
+    return item["forced"]
 
 
 def told_line(record):
@@ -1608,6 +1617,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     sent_cves = {c for r in recent for c in r[1]}
 
     fresh, keys, fresh_titles, failed, counts = [], set(), [], [], {}
+    always = [_keyword_re(k) for k in config.get("keywords", {}).get("always_urgent", [])]
     decisions = dict((state or {}).get("decisions", {}))
     ts = now.timestamp()
 
@@ -1635,6 +1645,8 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             continue
         keys.update((key, tkey))
         scorer.classify(item)
+        if mark_forced(item, always):
+            item["score"] = max(item["score"], 3)
         tagger.tag(item)
         if item["focus"]:
             focus_tagger.tag(item)
@@ -1644,7 +1656,12 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     # Topic feeds and social channels carry much else; keep only security ones.
     news = []
     for it in (it for _, it in fresh if not it.get("ransomware")):
-        if it["score"] < (it.get("min_score") or min_score):
+        if it.get("forced"):
+            if already_told(it, recent, sent_cves):
+                decide(it, "told")
+            else:
+                news.append(it)
+        elif it["score"] < (it.get("min_score") or min_score):
             decide(it, "score")
         # A focus story with its own security angle (focus_security words) counts as security news.
         elif it["security_only"] and not it["security_hits"] and not (it.get("focus") and it.get("focus_security")):
@@ -1867,6 +1884,7 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
     fallback = config.get("fallback_sectors", {})
     tagger = SectorTagger(config.get("sectors", {}), fallback=fallback)
     strong = [_keyword_re(k) for k in config.get("keywords", {}).get("instant", [])]
+    always = [_keyword_re(k) for k in config.get("keywords", {}).get("always_urgent", [])]
     window = timedelta(minutes=config.get("instant_max_age_minutes", 180))
     ts = now.timestamp()
 
@@ -1874,7 +1892,9 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
     for item in collect(dict(config, feeds=feeds), fetcher):
         if item["date"] and item["date"] > now + timedelta(hours=1):
             item["date"] = min(item["date"] - timedelta(hours=9), now)
-        if not item["date"] or now - item["date"] > window:
+        # Forced items come through search feeds that lag, so they get a day instead of three hours.
+        forced = mark_forced(item, always)
+        if not item["date"] or now - item["date"] > (timedelta(hours=24) if forced else window):
             continue
         key, tkey = item_key(item), title_key(item)
         if key in seen or tkey in seen or key in checked:
@@ -1883,13 +1903,16 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
         scorer.classify(item)
         text = f"{item['title']} {item.get('summary', '')}".lower()
         # A critical word in the headline (RCE, unauthenticated, CVSS 9…) is enough to ask Gemini,
-        # which applies the strict urgent rules.
-        # A feed marked "instant": "all" (a narrow topic search) has every new item asked about.
-        # So is a breach or attack of large scale ("371만 건 유출", "27,000 servers infected").
+        # which applies the strict urgent rules. So is a breach or attack of large scale ("371만 건
+        # 유출", "27,000 servers infected"). A feed marked "instant": "all" (a narrow topic search)
+        # has every new security item asked about; forced items always go, unless duplicates.
         signal = (item["id"].startswith("kev:") or any(r.search(text) for r in strong)
                   or any(r.search(item["title"].lower()) for r in scorer.critical)
                   or bool(item["security_hits"] and classify and SCALE.search(item["title"])))
-        if item.get("instant_all") and classify:
+        if forced:
+            signal = True
+            item["score"] = max(item["score"], 3)
+        elif item.get("instant_all") and classify:
             signal = item["focus_security"] or item["security_hits"]
         elif item["score"] < 3 and not (classify and signal and SCALE.search(item["title"])):
             signal = False

@@ -456,6 +456,22 @@ class RunTests(unittest.TestCase):
         finally:
             secnews.gemini_classify = saved
 
+    def test_forced_item_survives_an_off_topic_verdict_but_not_a_duplicate_one(self):
+        cfg = dict(CONFIG, feeds=[{"name": "Topic", "url": "f", "focus_only": True}])
+        cfg["keywords"] = dict(CONFIG["keywords"], always_urgent=["공항보안단"])
+        d = "Wed, 15 Oct 2026 01:00:00 +0000"
+        feed = self.rss(("공항보안단 신임 단장 취임", d), ("공항보안단 감사 착수, 근무자 휴대폰 확인", d))
+        answers = {"공항보안단 신임 단장 취임": dict(relevant=False, focus=False, urgent=False),
+                   "공항보안단 감사 착수, 근무자 휴대폰 확인": dict(relevant=True, focus=True, duplicate=True)}
+        saved = secnews.gemini_classify
+        secnews.gemini_classify = lambda items, *a: [answers[it["title"]] for it in items]
+        try:
+            sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed,
+                               bootstrap_send=True, classify=secnews.GeminiClassifier("k", cfg))
+        finally:
+            secnews.gemini_classify = saved
+        self.assertEqual([(i["title"], i["score"] >= 3) for i in sent], [("공항보안단 신임 단장 취임", True)])
+
     def test_gemini_drops_same_story_in_other_language_and_stories_already_sent(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}])
         d = "Wed, 15 Oct 2026 01:00:00 +0000"
@@ -647,6 +663,34 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         # Without Gemini a keyword-only guess about scale never goes out as an alert.
         self.assertFalse(secnews.SCALE.search("항공사 회원 1,014명 개인정보 유출"))
+
+    def test_always_urgent_keyword_goes_out_as_an_alert_whatever_gemini_says(self):
+        cfg, calls, sender = self.instant_setup()
+        cfg["keywords"] = dict(cfg["keywords"], always_urgent=["공항보안단"])
+        start = datetime(2026, 10, 17, 10, 0, tzinfo=secnews.KST)
+        stamp = lambda dt: dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        empty = self.rss(("Weekly security recap", stamp(start)))
+        secnews.run(cfg, self.state, sender, now=start, fetcher=lambda u: empty, bootstrap_send=True)
+        secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=5), fetcher=lambda u: empty)
+        calls.clear()
+        # Published five hours ago (searches lag): still in time for a forced alert.
+        news = self.rss(("공항보안단, 터미널 근무자 대상 이례적 감사", stamp(start - timedelta(hours=5))),
+                        ("공항 개항 기념 행사 열려", stamp(start + timedelta(minutes=8))))
+
+        def gemini(items, told=()):
+            for it in items:
+                if not it.get("forced"):
+                    it["score"] = 3
+            return [it for it in items if it.get("forced")]  # Gemini: not relevant, not urgent
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=10), fetcher=lambda u: news,
+                           classify=gemini)
+        self.assertEqual([i["title"] for i in sent], ["공항보안단, 터미널 근무자 대상 이례적 감사"])
+        self.assertIn("긴급 보안 속보", calls[0][0])
+        # The same story from another outlet does not go again.
+        again = self.rss(("공항보안단 이례적 감사…근무자 휴대폰 확인", stamp(start + timedelta(minutes=13))))
+        sent = secnews.run(cfg, self.state, sender, now=start + timedelta(minutes=15), fetcher=lambda u: again,
+                           classify=lambda items, told=(): [])
+        self.assertEqual(sent, [])
 
     def test_instant_alert_is_silent_at_night(self):
         cfg, calls, sender = self.instant_setup()
