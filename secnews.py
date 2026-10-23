@@ -704,7 +704,6 @@ GEMINI_BUDGET = None  # set in main()
 # Free tier, October 2026: Flash models 20 requests a day each, Flash Lite 500. The Flash shares
 # cover the hourly digests with room for a manual test; Flash Lite is the deep reserve.
 DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},
-                         {"model": "gemini-3.7-flash", "daily": 18},
                          {"model": "gemini-3.6-flash", "daily": 18},
                          {"model": "gemini-flash-lite-latest", "daily": 450}]
 
@@ -726,14 +725,25 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90):
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            # 429: this model's free quota is gone (or tests used it up); 404: no such model here.
-            # Either way skip the model for the rest of the day and ask the next one.
+            # 429 per minute (free Flash models allow 5 requests a minute): busy, like a 503 below.
+            detail = ""
+            if e.code == 429:
+                try:
+                    detail = e.read().decode("utf-8", "replace")
+                except Exception:
+                    pass
+            if GEMINI_BUDGET is not None and e.code == 429 and "PerMinute" in detail and len(busy) < 3:
+                log(f"Gemini {model}: per-minute limit; trying another model")
+                busy.add(model)
+                continue
+            # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
+            # model here. Either way skip the model for the rest of the day and ask the next one.
             if GEMINI_BUDGET is not None and e.code in (404, 429):
                 log(f"Gemini {model}: HTTP {e.code}; switching to the next model for today")
                 GEMINI_BUDGET.exhaust(model)
                 continue
             # 500/502/503/504: Google is overloaded right now. Another model may answer (up to all
-            # four are tried); the busy one stays available for later requests.
+            # the models are tried); the busy one stays available for later requests.
             if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and len(busy) < 3:
                 log(f"Gemini {model}: HTTP {e.code}; trying another model")
                 busy.add(model)

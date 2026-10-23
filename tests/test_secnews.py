@@ -1337,6 +1337,35 @@ class GeminiRetryTests(unittest.TestCase):
             secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
 
 
+    def test_per_minute_limit_is_busy_but_a_daily_limit_retires_the_model(self):
+        import io
+        import urllib.error
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        budget = secnews.GeminiBudget(Path(d.name) / "usage.json", [("a", 5), ("b", 5), ("c", 5)])
+        asked = []
+
+        def fake(req, timeout=0):
+            model = req.full_url.split("/models/")[1].split(":")[0]
+            asked.append(model)
+            if model == "a":
+                body = b'{"error": {"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProject"}]}]}}'
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(body))
+            if model == "b":
+                body = b'{"error": {"details": [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProject"}]}]}}'
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(body))
+            return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": "[1]"}]}}]}).encode())
+        saved = secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep
+        secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = budget, fake, lambda s: None
+        try:
+            self.assertEqual(secnews.gemini_json("p", "k"), [1])
+            self.assertEqual(asked, ["a", "b", "c"])
+            self.assertLess(budget.used["a"], 5)  # a minute's limit: still usable later today
+            self.assertEqual(budget.used["b"], 5)  # the day's limit: retired until tomorrow
+        finally:
+            secnews.GEMINI_BUDGET, secnews.urllib.request.urlopen, secnews.time.sleep = saved
+
+
 class QuietLogTests(unittest.TestCase):
     def test_public_log_shows_summary_and_holds_the_rest(self):
         import contextlib
