@@ -131,7 +131,7 @@ class _ArticleDates(HTMLParser):
                 self.values.setdefault(key, attrs["content"])
 
 
-def parse_article_date(raw, default_tz=timezone.utc):
+def parse_article_date(raw, default_tz=timezone.utc, pattern=None):
     """Read publication metadata, never a modification time or the current fetch time."""
     parser = _ArticleDates()
     parser.feed(raw[:200_000].decode("utf-8", "replace"))
@@ -139,6 +139,13 @@ def parse_article_date(raw, default_tz=timezone.utc):
         date = parse_date(parser.values.get(key), default_tz)
         if date is not None:
             return date
+    if pattern:
+        match = re.search(pattern, clean_text(raw[:200_000].decode("utf-8", "replace")))
+        if match and len(match.groups()) == 5:
+            try:
+                return datetime(*(int(x) for x in match.groups()), tzinfo=default_tz)
+            except ValueError:
+                pass
     return None
 
 
@@ -1778,11 +1785,14 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
             parsed = parser(raw, feed["name"], default_tz=date_tz) if kind == "rss" else parser(raw, feed["name"])
             got = [it for it in parsed if not blocked_outlet(it, blocked)]
             if feed.get("fetch_article_dates"):
-                todo = [it for it in got if it["date"] is None and it["link"].startswith(("https://", "http://"))]
+                known = config.get("_known_article_keys", ())
+                todo = [it for it in got if (it["date"] is None or feed["fetch_article_dates"] == "always")
+                        and item_key(it) not in known and title_key(it) not in known
+                        and it["link"].startswith(("https://", "http://"))]
 
                 def date_of(item):
                     try:
-                        return parse_article_date(fetcher(item["link"]), date_tz)
+                        return parse_article_date(fetcher(item["link"]), date_tz, feed.get("article_date_pattern"))
                     except Exception:
                         return None
 
@@ -2025,7 +2035,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             tags = item.get("focus_sectors" if item.get("focus") else "sectors") or [""]
             reviewed[key] = [reason, item["title"][:120], item.get("source", ""), bool(item.get("focus")), tags[0]]
 
-    for item in collect(config, fetcher, failed, counts):
+    for item in collect(dict(config, _known_article_keys=seen), fetcher, failed, counts):
         if config.get("require_publish_date") and (not item["date"] or item["date"] > now):
             # A bounded test must not treat an undated or future article as recent, or guess
             # its timezone. Leave it unsent until its publication time can be established.
@@ -2335,17 +2345,20 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
     ts = now.timestamp()
 
     candidates = []
-    for item in collect(dict(config, feeds=feeds), fetcher):
+    known = set(seen) | set(checked) | {k[1:] for k in checked if k.startswith("!")}
+    for item in collect(dict(config, feeds=feeds, _known_article_keys=known), fetcher):
         if item["date"] and item["date"] > now + timedelta(hours=1):
             item["date"] = min(item["date"] - timedelta(hours=9), now)
         # Forced items come through search feeds that lag, so they get a day instead of three hours.
         forced = mark_forced(item, always)
-        if not item["date"] or now - item["date"] > (timedelta(hours=24) if forced else window):
-            continue
         key, tkey = item_key(item), title_key(item)
+        mark = "!" + key if forced else key
+        if not item["date"] or now - item["date"] > (timedelta(hours=24) if forced else window):
+            if item["date"] is not None:
+                checked[mark] = ts  # an old article stays old; avoid refetching its page every five minutes
+            continue
         # Judged once; a miss waits for the digest. An item that became forced after an earlier
         # look (the always-urgent list grew) gets one more look under its own mark.
-        mark = "!" + key if forced else key
         if key in seen or tkey in seen or mark in checked:
             continue
         checked[mark] = ts

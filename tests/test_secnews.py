@@ -115,6 +115,32 @@ class ParseTests(unittest.TestCase):
     def test_article_date_never_substitutes_a_modification_time(self):
         self.assertIsNone(secnews.parse_article_date(b'<meta property="article:modified_time" content="2026-10-15T01:00:00Z">'))
 
+    def test_article_date_reads_a_configured_visible_publication_time(self):
+        raw = (b'<meta property="article:modified_time" content="2026-10-15T12:00:00+09:00">'
+               b'<div><span>Published</span> 2026.\n 10.\n 15 &nbsp; 10:30</div>')
+        pattern = r'Published\s+(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\s+(\d{1,2}):(\d{2})'
+        date = secnews.parse_article_date(raw, secnews.KST, pattern)
+        self.assertEqual(date, datetime(2026, 10, 15, 10, 30, tzinfo=secnews.KST))
+
+    def test_coarse_feed_dates_are_replaced_and_known_articles_are_not_refetched(self):
+        raw = (b'<rss><channel><item><title>Example A</title><link>https://example.com/a</link>'
+               b'<pubDate>2026-10-15T00:00:00+09:00</pubDate></item></channel></rss>')
+        page = b'<meta property="article:published_time" content="2026-10-15T10:30:00+09:00">'
+        cfg = {"feeds": [{"name": "Wire", "url": "feed", "fetch_article_dates": "always"}]}
+        calls = []
+        def fetcher(url):
+            calls.append(url)
+            return {"feed": raw, "https://example.com/a": page}[url]
+        (item,) = secnews.collect(cfg, fetcher)
+        self.assertEqual(item["date"], datetime(2026, 10, 15, 10, 30, tzinfo=secnews.KST))
+        secnews.collect(dict(cfg, _known_article_keys={secnews.item_key(item)}), fetcher)
+        self.assertEqual(calls.count("https://example.com/a"), 1)
+        def failed_page(url):
+            if url == "feed": return raw
+            raise OSError("unavailable")
+        (item,) = secnews.collect(cfg, failed_page)
+        self.assertIsNone(item["date"])  # never present a placeholder midnight as the exact publication time
+
     def test_html_page_is_reported(self):
         with self.assertRaisesRegex(ValueError, "HTML page"):
             secnews.parse_feed(b"<!doctype html><html><head></head></html>", "X")
@@ -463,6 +489,21 @@ class RunTests(unittest.TestCase):
         sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
         self.assertEqual([it["title"] for it in sent], ["Airport booking system zero-day exploited"])
         self.assertEqual(sent[0]["date"], NOW - timedelta(minutes=5))
+
+    def test_instant_does_not_refetch_publication_times_for_old_articles(self):
+        feed = self.rss(("Airport ransomware attack", "Thu, 15 Oct 2026 00:00:00 +0900"))
+        article_url = f"https://e/{abs(hash('Airport ransomware attack'))}"
+        page = b'<meta property="article:published_time" content="2026-10-15T01:00:00+09:00">'
+        cfg = dict(CONFIG, feeds=[{"name": "Wire", "url": "feed", "instant": True, "fetch_article_dates": "always"}])
+        calls = []
+        def fetcher(url):
+            calls.append(url)
+            return {"feed": feed, article_url: page}[url]
+        state = {"seen": {}, "recent": [], "instant_checked": {}, "last_digest": NOW.timestamp()}
+        secnews.run_instant(cfg, state, self.state, self.sender, NOW, fetcher)
+        secnews.run_instant(cfg, secnews.load_state(self.state), self.state, self.sender, NOW + timedelta(minutes=5), fetcher)
+        self.assertEqual(calls.count(article_url), 1)
+        self.assertEqual(self.sent, [])
 
     def test_gemini_classification_drops_reclassifies_and_sets_urgency(self):
         cfg = dict(CONFIG, feeds=[{"name": "F", "url": "f"}], sectors={"금융": ["bank"]},
