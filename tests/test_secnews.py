@@ -456,6 +456,17 @@ class RunTests(unittest.TestCase):
         finally:
             secnews.gemini_classify = saved
 
+    def test_items_past_the_gemini_limit_are_dropped_unless_gemini_failed(self):
+        items = [dict(title=f"Airline breach {n}", summary="", score=2, focus=False) for n in range(3)]
+        saved = secnews.gemini_classify
+        secnews.gemini_classify = lambda part, *a: [dict(relevant=True, focus=False, urgent=False) for _ in part]
+        try:
+            kept = secnews.GeminiClassifier("k", CONFIG, limit=2)(items)
+        finally:
+            secnews.gemini_classify = saved
+        self.assertEqual([i["title"] for i in kept], ["Airline breach 0", "Airline breach 1"])
+        self.assertEqual(items[2]["drop_reason"], "gemini_limit")
+
     def test_forced_item_survives_an_off_topic_verdict_but_not_a_duplicate_one(self):
         cfg = dict(CONFIG, feeds=[{"name": "Topic", "url": "f", "focus_only": True}])
         cfg["keywords"] = dict(CONFIG["keywords"], always_urgent=["공항보안단"])

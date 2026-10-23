@@ -813,7 +813,7 @@ class GeminiClassifier:
     """Second opinion on the keyword filter: Gemini drops off-topic items and sets focus,
     urgency and sector. Keyword results stay for anything Gemini could not judge."""
 
-    def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=60):
+    def __init__(self, key, config, model="gemini-flash-latest", chunk=20, limit=100):
         self.key, self.model, self.chunk, self.limit = key, model, chunk, limit
         self.sectors = list(config.get("sectors", {})) + list(config.get("fallback_sectors", {}))
         self.focus_sectors = list(config.get("focus_sectors", {}))
@@ -823,9 +823,10 @@ class GeminiClassifier:
         """Return the items to keep, best keyword score first in, same order out."""
         judged, dropped, dups, failed = {}, 0, 0, False
         self.failed = False
-        # The best-ranked 60 are judged, 20 per request: an hourly digest needs one request, the
-        # 06:00 round-up three smaller ones (one big request of 60 failed with 503 or timed out
-        # far more often). The rest keep keyword results; they are past the caps nearly always.
+        # The best-ranked 100 are judged, 20 per request: an hourly digest needs one or two requests,
+        # the 06:00 round-up more, smaller ones (one big request of 60 failed with 503 or timed out
+        # far more often). The rest are dropped unless Gemini failed: unjudged low-ranked items
+        # must not fill the places of judged ones it turned down.
         head = items[:self.limit]
         for i in range(0, len(head), self.chunk):
             part = head[i:i + self.chunk]
@@ -846,7 +847,10 @@ class GeminiClassifier:
         for it in items:
             r = judged.get(id(it))
             if r is None:
-                kept.append(it)
+                if failed or it.get("forced"):
+                    kept.append(it)
+                else:
+                    it["drop_reason"] = "gemini_limit"
                 continue
             focus = bool(r.get("focus"))
             if r.get("duplicate") or r.get("already_sent"):
@@ -1797,6 +1801,7 @@ REASONS = {
     "kev": "같은 취약점을 다룬 뉴스 기사가 있어서 KEV 항목을 뺐어요.",
     "gemini_irrelevant": "AI(Gemini)가 보안과 무관하다고 판단해서 뺐어요.",
     "gemini_dup": "AI(Gemini)가 다른 기사나 이미 보낸 사건과 같은 내용으로 판단해서 뺐어요.",
+    "gemini_limit": "새 기사가 많아 AI 판단 한도(1회 100건) 밖으로 밀려서 뺐어요 (키워드 점수 하위).",
     "gemini_focus_only": "군 기사만 받는 출처인데 AI(Gemini)가 군 기사가 아니라고 판단했어요.",
     "rw_filtered": "감시 대상(한국·주요 업종·군 관련)이 아닌 랜섬웨어 피해라서 뺐어요.",
     "old": "48시간보다 오래된 기사라서 뺐어요.",
