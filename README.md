@@ -148,6 +148,13 @@ python3 secnews.py --dry-run               # 보내지 않고 메시지만 출�
 - 레포를 비공개로 바꾸면 Actions 무료 시간(월 2,000분)을 넘어 유료가 됩니다.
 # Checking selection changes
 
+`digest_max_age_hours` optionally limits regular digests by publication time, independently of
+`max_age_hours`, which retains the longer duplicate-history window. For the first digest after quiet
+hours, the admission window starts at the last evening digest (one hour before quiet hours start).
+Half-past preparation uses its upcoming digest's window. Enable `require_publish_date` to exclude
+undated or future-dated candidates instead of assuming they are recent. Existing configurations
+without the new option retain their previous admission window; instant-alert rules are separate.
+
 Classification responses are validated inside model fallback: malformed fields move to the next
 available model without weakening type checks. Format errors receive a brief rest and do not count
 toward the two-overloaded-Flash shortcut to Lite. Model order and daily limits stay configurable.
