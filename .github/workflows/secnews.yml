@@ -87,9 +87,17 @@ jobs:
           token: ${{ secrets.CONFIG_REPO_TOKEN }}
           path: .private-config
           persist-credentials: false
-      # What was already sent lives in the Actions cache between runs. Each run saves a new
-      # entry; restore-keys picks the newest one.
+      # Only ciphertext is uploaded to the public cache. Legacy plaintext is read once for
+      # migration when no encrypted cache exists; it is never written by this workflow.
+      - name: Restore encrypted runtime state
+        id: encrypted-state
+        uses: actions/cache/restore@v5
+        with:
+          path: .state-cache
+          key: secnews-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: secnews-encrypted-state-v1-
       - name: Restore sent-item state
+        if: steps.encrypted-state.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v5
         with:
           path: .state
@@ -98,6 +106,11 @@ jobs:
       # The only package: cryptography, for the subscriber file's AES-256-GCM. Exact files only.
       - name: Install cryptography
         run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
+      - name: Decrypt runtime state
+        if: steps.encrypted-state.outputs.cache-matched-key != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python3 tools/state_cache.py open
       # The subscriber list is also backed up (still encrypted) in the private repository, so a
       # cache that was evicted or deleted does not lose everyone who subscribed.
       - name: Restore subscribers from the backup
@@ -234,12 +247,17 @@ jobs:
             fi
           done
           echo "::warning::Could not push the weekly review file"
-      - name: Save sent-item state
+      - name: Encrypt runtime state
+        if: success() && !(inputs.test_me && !inputs.scheduled)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python3 tools/state_cache.py seal
+      - name: Save encrypted runtime state
         if: success() && !(inputs.test_me && !inputs.scheduled)
         uses: actions/cache/save@v5
         with:
-          path: .state
-          key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .state-cache
+          key: secnews-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
   # A run that never starts cannot report itself: tell the admin when the 5-minute runs stop.
   watchdog:
@@ -265,7 +283,15 @@ jobs:
       SECNEWS_STATE: ${{ github.workspace }}/.state/seen.json
     steps:
       - uses: actions/checkout@v5
+      - name: Restore encrypted runtime state
+        id: encrypted-state
+        uses: actions/cache/restore@v5
+        with:
+          path: .state-cache
+          key: secnews-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: secnews-encrypted-state-v1-
       - name: Restore subscriber list
+        if: steps.encrypted-state.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v5
         with:
           path: .state
@@ -273,6 +299,11 @@ jobs:
           restore-keys: secnews-state-
       - name: Install cryptography
         run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
+      - name: Decrypt runtime state
+        if: steps.encrypted-state.outputs.cache-matched-key != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python3 tools/state_cache.py open
       - name: Who messaged the bot
         env:
           # The chat-id secret is left out on purpose: GitHub would mask those ids in this log.
