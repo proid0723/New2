@@ -2339,6 +2339,20 @@ def morning(config, now):
     return bool(hours) and now.astimezone(KST).hour == hours[1]
 
 
+def digest_cutoff(config, now, prejudge=False):
+    """Admission freshness is independent of the longer sent-story deduplication history."""
+    if "digest_max_age_hours" not in config:
+        return now - timedelta(hours=config.get("max_age_hours", 48))
+    target = (datetime.strptime(prejudge, "%Y-%m-%d %H").replace(tzinfo=KST) if prejudge else
+              now.astimezone(KST).replace(minute=0, second=0, microsecond=0))
+    if morning(config, target):
+        start = target.replace(hour=config["quiet_hours"][0])
+        if start >= target:
+            start -= timedelta(days=1)
+        return start - timedelta(hours=1)  # include arrivals since the last evening digest
+    return target - timedelta(hours=float(config["digest_max_age_hours"]))
+
+
 def due(state, config, now):
     """True when a digest should go out now. The timer wakes the script often; with
     "digest_on_the_hour" the first run of each new clock hour sends, otherwise the first run
@@ -2412,6 +2426,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     tagger = SectorTagger(config.get("sectors", {}), fallback=fallback)
     focus_tagger = SectorTagger(config.get("focus_sectors", {}), key="focus_sectors")
     max_age = timedelta(hours=config.get("max_age_hours", 48))
+    cutoff = digest_cutoff(config, now, prejudge)
     min_score = config.get("min_score", 0)
 
     # Stories already sent in the last max_age_hours: [title, [CVEs], timestamp, story, sent as urgent].
@@ -2448,7 +2463,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         if item["date"] and item["date"] > now + timedelta(hours=1):
             # Some Korean feeds stamp Korean time as GMT, which puts their articles 9 hours ahead.
             item["date"] = min(item["date"] - timedelta(hours=9), now)
-        if item["date"] and now - item["date"] > max_age:
+        if item["date"] and item["date"] < cutoff:
             if not item["id"].startswith("kev:") and (item.get("link") or title_key(item)) not in decisions:
                 decide(item, "old")  # the KEV catalog is mostly old entries; not worth remembering
             continue
