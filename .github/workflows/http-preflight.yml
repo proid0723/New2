@@ -1,0 +1,19 @@
+name: Public HTTP transport preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check transport prerequisites without credentials or service calls
+        run: |
+          python3 - <<'PY'
+          import ssl, urllib.request
+          proxies = urllib.request.getproxies()
+          assert not any(proxies.get(k) for k in ('http', 'https', 'all')), 'Pinned content transport requires direct runner egress'
+          context = ssl.create_default_context()
+          assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+          print('Content transport prerequisites passed; no network requests were made')
+          PY
