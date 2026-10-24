@@ -1228,7 +1228,7 @@ class LocalizeTests(unittest.TestCase):
             again = secnews.GeminiBudget(path, [("model-a", 2), ("model-b", 5)])
             self.assertEqual(again.history[again.day], {"model-a": 2, "model-b": 1})
             lines = again.summary()
-            self.assertIn("사용 3회", lines[0])
+            self.assertIn("봇 요청 3회", lines[0])
             self.assertIn("model-a: 2회 / 한도 2", lines[1])
             self.assertIn("model-b: 1회 / 한도 5", lines[2])
 
@@ -1744,6 +1744,132 @@ class SubscriberTests(unittest.TestCase):
         self.assertEqual((got, calls), ([], [7]))
         got, calls = self.fetch_with([[{"update_id": 8}]], queued=1)  # just sent, not yet confirmed
         self.assertEqual(len(calls), 1)
+
+
+class TestUsageMergeTests(unittest.TestCase):
+    models = [("model-a", 20), ("model-b", 20)]
+
+    def test_admin_test_records_api_attempts_without_changing_news_or_subscribers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state, subscribers = root / "seen.json", root / "subscribers.json"
+            state.write_text('{"seen":{"preserved":123},"last_digest":0}')
+            subscribers.write_bytes(b'encrypted production subscribers')
+            before = state.read_bytes(), subscribers.read_bytes()
+            event = root / "events" / "admin-run.json"
+            title = "Airport zero-day actively exploited"
+            item = {"title": title, "summary": "An airport service reported a newly exploited flaw in its booking system.",
+                    "source": "Example", "date": datetime.now(timezone.utc) - timedelta(minutes=5),
+                    "link": "https://example.com/article", "id": "1", "security_only": False, "min_score": None}
+            def classify(items, told):
+                secnews.GEMINI_BUDGET.take()  # mock one model request; no external API
+                return items
+            environment = {"TELEGRAM_BOT_TOKEN": "test-token", "SECNEWS_STATE": str(state),
+                           "SECNEWS_ONLY_CHATS": "999", "SECNEWS_OFFLINE": "1",
+                           "SECNEWS_TEST_USAGE_EVENT": str(event), "SECNEWS_TEST_USAGE_DIR": str(root / 'ledger')}
+            with mock.patch.dict(os.environ, environment, clear=True), \
+                 mock.patch.object(secnews, "collect", side_effect=lambda *a, **k: [dict(item)]), \
+                 mock.patch.object(secnews, "make_classifier", return_value=classify), \
+                 mock.patch.object(secnews, "make_translator", return_value=None), \
+                 mock.patch.object(secnews, "GEMINI_BUDGET", None), \
+                 mock.patch.object(secnews, "telegram_send", return_value={"ok": True}) as send:
+                secnews.main(["--config", str(Path(__file__).with_name("test_feeds.json"))])
+            self.assertEqual((state.read_bytes(), subscribers.read_bytes()), before)
+            self.assertEqual({c.args[1] for c in send.call_args_list}, {"999"})
+            self.assertEqual(sum(json.loads(event.read_text())["requests"].values()), 1)
+
+    def test_test_increments_merge_once_even_when_production_advances_concurrently(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            live = root / "production" / "gemini_usage.json"
+            budget = secnews.GeminiBudget(live, self.models)
+            budget.take(); budget.take()
+            protected = {live.with_name("seen.json"): b'{"seen":{"already-sent":123}}',
+                         live.with_name("subscribers.json"): b'encrypted-subscriber-data'}
+            for path, data in protected.items(): path.write_bytes(data)
+            test_path = root / "test-usage.json"
+            test_path.write_bytes(live.read_bytes())
+            event_path = root / "events" / "run-1.json"
+            test = secnews.GeminiBudget(test_path, self.models, test_usage_event=event_path)
+            test.take(); test.take()
+            event = json.loads(event_path.read_text())
+            self.assertEqual(set(event), {"v", "id", "day", "requests", "exhausted", "resting"})
+            self.assertEqual(event["requests"], {"model-a": 2})  # not inherited production totals
+            self.assertEqual(event["id"], "run-1")
+            budget.take()  # production ran while the test was still active
+            ledger = root / "ledger" / budget.day
+            ledger.mkdir(parents=True)
+            (ledger / "test-run-1.json").write_text(event_path.read_text())
+            merged = secnews.GeminiBudget(live, self.models, test_usage_dir=ledger.parent)
+            self.assertEqual(merged.history[merged.day]["model-a"], 5)
+            self.assertEqual(merged.used["model-a"], 5)
+            self.assertEqual(merged.test_history[merged.day]["model-a"], 2)
+            again = secnews.GeminiBudget(live, self.models, test_usage_dir=ledger.parent)
+            self.assertEqual(again.history[again.day]["model-a"], 5)
+            self.assertEqual(again.used["model-a"], 5)
+            for path, data in protected.items(): self.assertEqual(path.read_bytes(), data)
+
+    def test_independent_test_records_preserve_quota_and_busy_marks_without_inventing_requests(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            live = root / "production.json"
+            original = secnews.GeminiBudget(live, self.models)
+            original.take()
+            for name, count in (("run-a", 2), ("run-b", 3)):
+                local, event = root / (name + '-local.json'), root / (name + '.json')
+                local.write_bytes(live.read_bytes())
+                test = secnews.GeminiBudget(local, self.models, test_usage_event=event)
+                for _ in range(count): test.take()
+                if name == "run-a":
+                    test.exhaust("model-b")
+                    test.rest("model-a", 15)
+                ledger = root / "ledger" / test.day
+                ledger.mkdir(parents=True, exist_ok=True)
+                (ledger / event.name).write_text(event.read_text())
+            merged = secnews.GeminiBudget(live, self.models, test_usage_dir=root / "ledger")
+            self.assertEqual(merged.history[merged.day], {"model-a": 6})
+            self.assertEqual(merged.test_history[merged.day], {"model-a": 5})
+            self.assertEqual(merged.used, {"model-a": 6, "model-b": 20})
+            self.assertGreater(merged.resting["model-a"], secnews.time.time())
+
+    def test_prior_day_usage_does_not_reduce_today_and_future_or_malformed_records_are_ignored(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            live = root / "usage.json"
+            original = secnews.GeminiBudget(live, self.models)
+            original.take()
+            day = datetime.strptime(original.day, "%Y-%m-%d")
+            previous = (day - timedelta(days=1)).strftime("%Y-%m-%d")
+            future = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+            ledger = root / "ledger" / original.day
+            ledger.mkdir(parents=True)
+            records = [dict(v=1, id="previous", day=previous, requests={"model-a": 4}, exhausted=["model-a"]),
+                       dict(v=1, id="future", day=future, requests={"model-a": 5}),
+                       dict(v=1, id="negative", day=original.day, requests={"model-a": -2}),
+                       dict(v=1, id="invalid", day=original.day, requests={"model-a": 3}, resting=[])]
+            for event in records: (ledger / (event['id'] + '.json')).write_text(json.dumps(event))
+            merged = secnews.GeminiBudget(live, self.models, test_usage_dir=root / "ledger")
+            self.assertEqual(merged.used, {"model-a": 1})
+            self.assertEqual(merged.history[previous], {"model-a": 4})
+            self.assertEqual(merged.applied_tests, {"previous": previous})
+
+    def test_test_with_no_api_calls_creates_no_publishable_record(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            event = root / "run-id.json"
+            budget = secnews.GeminiBudget(root / "usage.json", self.models, test_usage_event=event)
+            budget._save()
+            self.assertFalse(event.exists())
+
+    def test_restarting_a_local_command_preserves_earlier_attempts_in_its_test_event(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            event, local = root / "run-1.json", root / "usage.json"
+            first = secnews.GeminiBudget(local, self.models, test_usage_event=event)
+            first.take()
+            second = secnews.GeminiBudget(local, self.models, test_usage_event=event)
+            second.take()
+            self.assertEqual(json.loads(event.read_text())["requests"], {"model-a": 2})
 
 
 class GeminiRetryTests(unittest.TestCase):

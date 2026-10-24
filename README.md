@@ -36,6 +36,10 @@ GitHub Actions(공개 레포는 무료)에서 돌고, 서버나 유료 서비스
 `gemini-flash-latest` 18번 → `gemini-3.7-flash` 18번 → `gemini-3.6-flash` 18번 → `gemini-flash-lite-latest` 450번 순서로 씁니다.
 한도 초과(429)나 없는 모델(404)이 오면 그날은 다음 모델로 넘어가고, 모두 막히면 키워드 판단과 구글 번역으로 보냅니다.
 결제 계정을 연결하지 않은 무료 등급이면 요금이 나가지 않습니다. 사용 횟수는 `gemini_usage.json`에 기록됩니다.
+관리자 테스트의 API 요청도 비공개 설정 저장소의 `api-usage/`에 실행별로 기록하고,
+다음 실행에서 중복 없이 합산합니다. 테스트의 발송 기록·구독자 목록은 운영 상태에 저장하지 않습니다.
+표시되는 횟수는 봇의 요청 시도 기록이며, 다른 앱의 사용이나 과거 미기록 테스트까지 포함하는
+Google 프로젝트 전체 사용량과는 다를 수 있습니다.
 
 ## 구독 (관리자 승인제)
 - 봇에서 **/start** → 신청자에게 "접수됐어요" 안내, 관리자에게 이름과 ✅ 승인 / ❌ 거절 버튼
@@ -58,7 +62,7 @@ Settings → Secrets and variables → Actions → **Secrets**
 | `TELEGRAM_BOT_TOKEN` | BotFather에서 받은 봇 토큰 |
 | `TELEGRAM_TEST_CHAT_ID` (또는 `..._IDS`) | 관리자(본인) 텔레그램 ID: 테스트, 승인 버튼, 고장 알림을 받음 |
 | `GEMINI_API_KEY` | Google AI Studio API 키 (없으면 키워드 판단 + 구글 번역) |
-| `CONFIG_REPO_TOKEN` | 비공개 설정 레포 `New2_config` 토큰 (Contents: Read and write, 설정 읽기와 구독자 백업 저장) |
+| `CONFIG_REPO_TOKEN` | 비공개 설정 레포 `New2_config` 토큰 (Contents: Read and write, 설정 읽기·구독자 백업·테스트 API 사용량 저장) |
 | `TELEGRAM_CHAT_IDS` | (선택) 승인 없이 넣을 구독자 ID. 다음 실행 때 암호화 목록에 합쳐짐 |
 
 cron-job.org: 5분마다 `POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/secnews.yml/dispatches`,

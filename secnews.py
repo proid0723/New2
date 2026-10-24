@@ -755,11 +755,10 @@ Input:
 
 
 class GeminiBudget:
-    """Caps Gemini requests per model per day (Google's free-tier day, Pacific time) below the free
-    quota. Each model has its own quota, so when one model's share is used up the next one in the
-    list takes over; when all are used up the keyword filter and Google Translate do the work."""
+    """Cap bot request attempts per model/day, including recorded administrator tests.
+    These local counters are not the provider's project-wide quota measurements."""
 
-    def __init__(self, path, models):
+    def __init__(self, path, models, test_usage_dir=None, test_usage_event=None):
         self.path, self.models = path, models  # [(model, daily cap), ...] in order of preference
         # Google's free-tier day starts at midnight Pacific *standard* time all year (08:00 UTC,
         # 17:00 in Korea), not at daylight-saving midnight: counting from 16:00 in summer made the
@@ -784,9 +783,67 @@ class GeminiBudget:
         resting = data.get("resting") if isinstance(data, dict) else None
         self.resting = ({m: t for m, t in resting.items() if isinstance(t, (int, float)) and t > time.time()}
                         if isinstance(resting, dict) else {})
+        self.test_usage_event = Path(test_usage_event) if test_usage_event else None
+        self.test_requests, self.test_exhausted, self.test_resting = {}, set(), {}
+        self.applied_tests = data.get("applied_tests", {}) if isinstance(data, dict) else {}
+        self.applied_tests = self.applied_tests if isinstance(self.applied_tests, dict) else {}
+        self.test_history = data.get("test_history", {}) if isinstance(data, dict) else {}
+        self.test_history = self.test_history if isinstance(self.test_history, dict) else {}
+        # A restarted local command in the same workflow must not overwrite its earlier attempts.
+        if self.test_usage_event and self.test_usage_event.exists():
+            try:
+                own = json.loads(self.test_usage_event.read_text(encoding="utf-8"))
+                if own.get("day") == self.day:
+                    self.test_requests = dict(own.get("requests", {}))
+                    self.test_exhausted = set(own.get("exhausted", []))
+                    self.test_resting = dict(own.get("resting", {}))
+            except (OSError, ValueError, TypeError):
+                pass
+        if test_usage_dir and self._merge_test_usage(Path(test_usage_dir)):
+            self._save()
+
+    def _merge_test_usage(self, folder):
+        """Merge immutable per-test increments once; never load a test's news/subscriber state."""
+        cutoff = (datetime.strptime(self.day, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        self.applied_tests = {k: d for k, d in self.applied_tests.items()
+                              if isinstance(d, str) and cutoff <= d <= self.day}
+        changed = False
+        for path in sorted(folder.glob("*/*.json")):
+            try:
+                event = json.loads(path.read_text(encoding="utf-8"))
+                identity, day = event["id"], event["day"]
+                if (event.get("v") != 1 or not isinstance(identity, str) or not isinstance(day, str)
+                        or not cutoff <= day <= self.day or identity in self.applied_tests):
+                    continue
+                requests = event["requests"]
+                exhausted, resting = event.get("exhausted", []), event.get("resting", {})
+                if (not isinstance(requests, dict) or any(not isinstance(n, int) or n < 0 for n in requests.values())
+                        or not isinstance(exhausted, list) or not isinstance(resting, dict)):
+                    continue
+                for model, count in requests.items():
+                    history = self.history.setdefault(day, {})
+                    history[model] = history.get(model, 0) + count
+                    tests = self.test_history.setdefault(day, {})
+                    tests[model] = tests.get(model, 0) + count
+                    if day == self.day:
+                        self.used[model] = self.used.get(model, 0) + count
+                if day == self.day:
+                    for model, cap in self.models:
+                        if model in exhausted:
+                            self.used[model] = max(self.used.get(model, 0), cap)
+                    for model, until in resting.items():
+                        if isinstance(until, (int, float)) and until > time.time():
+                            self.resting[model] = max(self.resting.get(model, 0), until)
+                self.applied_tests[identity] = day
+                changed = True
+            except (OSError, ValueError, TypeError, KeyError):
+                log("warning: a test API usage record could not be read")
+        return changed
 
     def rest(self, model, minutes):
         self.resting[model] = max(self.resting.get(model, 0), time.time() + minutes * 60)
+        if self.test_usage_event:
+            self.test_resting[model] = self.resting[model]
         self._save()
 
     def _save(self):
@@ -794,9 +851,21 @@ class GeminiBudget:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps({"v": 2, "day": self.day, "used": self.used, "resting": self.resting,
-                                             "history": {d: self.history[d] for d in keep}}), encoding="utf-8")
+                                             "history": {d: self.history[d] for d in keep},
+                                             "applied_tests": self.applied_tests,
+                                             "test_history": {d: self.test_history[d] for d in keep if d in self.test_history}}),
+                                 encoding="utf-8")
         except OSError:
             pass
+        if self.test_usage_event and self.test_requests:
+            # This file contains this test's increments only, not a copy of the production counters.
+            self.test_usage_event.parent.mkdir(parents=True, exist_ok=True)
+            event = {"v": 1, "id": self.test_usage_event.stem, "day": self.day,
+                     "requests": self.test_requests, "exhausted": sorted(self.test_exhausted),
+                     "resting": self.test_resting}
+            temp = self.test_usage_event.with_suffix(".tmp")
+            temp.write_text(json.dumps(event), encoding="utf-8")
+            temp.replace(self.test_usage_event)
 
     def take(self, skip=(), lite_first=False):
         """Count one request and return the model to send it to (not one of skip). The Flash
@@ -811,6 +880,10 @@ class GeminiBudget:
                 self.used[model] = self.used.get(model, 0) + 1
                 today = self.history[self.day]
                 today[model] = today.get(model, 0) + 1
+                if self.test_usage_event:
+                    self.test_requests[model] = self.test_requests.get(model, 0) + 1
+                    tests = self.test_history.setdefault(self.day, {})
+                    tests[model] = tests.get(model, 0) + 1
                 self._save()
                 return model
         raise RuntimeError("today's Gemini budget is used up for every model")
@@ -819,6 +892,8 @@ class GeminiBudget:
         for m, cap in self.models:
             if m == model:
                 self.used[m] = cap
+        if self.test_usage_event:
+            self.test_exhausted.add(model)
         self._save()
 
     def summary(self, days=1):
@@ -829,7 +904,7 @@ class GeminiBudget:
             n = sum(self.history[d].get(model, 0) for d in recent)
             lines.append(f"  - {model}: {n}회" + (f" / 한도 {cap}" if days == 1 else ""))
         total = sum(sum(self.history[d].values()) for d in recent)
-        return [f"· AI(Gemini) 사용 {total}회" + (" (오늘, 매일 17시 초기화)" if days == 1 else f" (최근 {len(recent)}일)")] + lines
+        return [f"· AI(Gemini) 봇 요청 {total}회" + (" (오늘, 매일 17시 초기화)" if days == 1 else f" (최근 {len(recent)}일)")] + lines
 
 
 GEMINI_BUDGET = None  # set in main()
@@ -2367,7 +2442,12 @@ def write_review(folder, stats, now, name=None):
             "until": local.isoformat(),
             "numbers": {k: stats.get(k, 0) for k in ("runs", "collected", "passed", "ai_dropped", "sent")},
             "items_per_feed": stats.get("feeds", {}),
-            "gemini": ({"caps": dict(GEMINI_BUDGET.models), "requests_by_day": GEMINI_BUDGET.history}
+            "gemini": ({"caps": dict(GEMINI_BUDGET.models), "requests_by_day": GEMINI_BUDGET.history,
+                        "test_requests_by_day": GEMINI_BUDGET.test_history,
+                        "day": GEMINI_BUDGET.day,
+                        "bot_remaining_by_model": {m: max(0, cap - GEMINI_BUDGET.used.get(m, 0))
+                                                   for m, cap in GEMINI_BUDGET.models},
+                        "resting_until": GEMINI_BUDGET.resting}
                        if GEMINI_BUDGET else None),
             "fields": ["reason", "title", "source", "focus", "category"],
             "items": list(stats.get("review", {}).values()),
@@ -2514,7 +2594,7 @@ def test_send(config, state_path, token, chats, translator):
     """Send the current news to the given chats only, as a first run would, and leave
     the real state and subscriber list alone: what subscribers get next hour is unchanged."""
     import tempfile
-    log(f"test mode: sending only to {len(chats)} chat(s); nothing is saved")
+    log(f"test mode: sending only to {len(chats)} chat(s); news state is unchanged, API usage is recorded")
 
     def sender(text, silent=False):
         delivered = 0
@@ -2552,7 +2632,7 @@ def main(argv=None):
     ap.add_argument("--backup-subscribers", type=Path, metavar="FILE",
                     help="copy the encrypted subscriber list to FILE if it changed; prints changed/unchanged")
     ap.add_argument("--write-review", action="store_true",
-                    help="write this week's decisions so far for review (nothing is sent or changed)")
+                    help="write this week's decisions for review (no news is sent)")
     args = ap.parse_args(argv)
 
     if args.backup_subscribers:
@@ -2570,7 +2650,9 @@ def main(argv=None):
     LITE_THINKING = str(config.get("lite_thinking", LITE_THINKING)).strip().lower() or "off"
     ITEM_STYLE = os.environ.get("SECNEWS_ITEM_STYLE", "").strip() or config.get("item_style", "plain")
     GEMINI_BUDGET = GeminiBudget(state_path.with_name("gemini_usage.json"),
-                                 [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)])
+                                 [(m["model"], m["daily"]) for m in config.get("gemini_models", DEFAULT_GEMINI_MODELS)],
+                                 test_usage_dir=os.environ.get("SECNEWS_TEST_USAGE_DIR"),
+                                 test_usage_event=os.environ.get("SECNEWS_TEST_USAGE_EVENT"))
     if args.write_review:
         now = datetime.now(timezone.utc)
         stored = load_state(state_path) or {}

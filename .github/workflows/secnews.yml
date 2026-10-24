@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       test_me:
-        description: 'Test: send the current news only to the TELEGRAM_TEST_CHAT_ID secret (subscribers get nothing, nothing is saved). Untick to send to everyone.'
+        description: 'Test: send only to the administrator; preserve news/subscriber state but record API usage. Untick to send to everyone.'
         type: boolean
         default: true
       list_chats:
@@ -68,7 +68,7 @@ jobs:
     timeout-minutes: 25
     # Never run two senders at once, or both could send the same items.
     concurrency:
-      # Tests save nothing, so they get their own queue: a test never holds up a timer run's alert.
+      # Tests preserve news state and publish only API usage; they never hold up timer alerts.
       group: secnews-send${{ (inputs.test_me && !inputs.scheduled) && '-test' || '' }}
       cancel-in-progress: false
     env:
@@ -76,6 +76,7 @@ jobs:
       # Keywords and sources live in a private repository once CONFIG_REPO_TOKEN is set
       # (read-only access to <owner>/New2_config). The public repository has no feeds.json.
       HAS_PRIVATE_CONFIG: ${{ secrets.CONFIG_REPO_TOKEN != '' }}
+      SECNEWS_TEST_USAGE_DIR: ${{ github.workspace }}/.private-config/api-usage
     steps:
       - uses: actions/checkout@v5
       - name: Fetch private settings
@@ -120,6 +121,7 @@ jobs:
           TIMER_RUN: ${{ github.event_name == 'schedule' || inputs.scheduled }}
           REVIEW_NOW: ${{ inputs.review_now && !inputs.scheduled }}
           SECNEWS_ITEM_STYLE: ${{ !inputs.scheduled && inputs.item_style || '' }}
+          SECNEWS_TEST_USAGE_EVENT: ${{ (inputs.test_me && !inputs.scheduled) && format('{0}/secnews-api-usage/{1}-{2}.json', runner.temp, github.run_id, github.run_attempt) || '' }}
         # Timer runs (GitHub schedule or the external ping) wait for the hourly digest, and a run
         # with no saved state only records the current news. Manual runs send now.
         run: |
@@ -143,6 +145,32 @@ jobs:
           else
             python3 secnews.py --now $RESET_FLAG
           fi
+      # Tests publish increments only. Never save their .state copy over production news state.
+      - name: Record administrator test API usage
+        if: always() && inputs.test_me && !inputs.scheduled && env.HAS_PRIVATE_CONFIG == 'true'
+        env:
+          TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+          USAGE_EVENT: ${{ format('{0}/secnews-api-usage/{1}-{2}.json', runner.temp, github.run_id, github.run_attempt) }}
+        run: |
+          [ -f "$USAGE_EVENT" ] || exit 0
+          usage_day="$(python3 -c 'import json,os; print(json.load(open(os.environ["USAGE_EVENT"]))["day"])')"
+          mkdir -p ".private-config/api-usage/$usage_day"
+          cp "$USAGE_EVENT" ".private-config/api-usage/$usage_day/test-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
+          cd .private-config
+          branch="$(git symbolic-ref --short -q HEAD || echo main)"
+          git add "api-usage/$usage_day/test-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          git diff --cached --quiet && exit 0
+          git -c user.name="secnews" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Record administrator test API requests"
+          for try in 1 2; do
+            git -c http.extraheader="$auth" pull -q --rebase origin "$branch" && \
+              git -c http.extraheader="$auth" push -q origin HEAD:"$branch" && exit 0
+          done
+          echo "::error::Could not preserve administrator test API usage"
+          exit 1
       - name: Tell the owner the run failed
         if: failure() && (github.event_name == 'schedule' || inputs.scheduled)
         env:
