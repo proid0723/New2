@@ -928,7 +928,7 @@ DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 F
 
 
 def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False, think=False,
-                deadline=None):
+                deadline=None, flash_timeout=None):
     """One Gemini request that answers in JSON. Raises on any failure. think: a Lite model thinks
     first (LITE_THINKING), for judging news; Flash models think on their own."""
 
@@ -962,8 +962,13 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
         body = body_for(model)
         req = urllib.request.Request(url, data=body, headers={
             "Content-Type": "application/json", "x-goog-api-key": key, "User-Agent": USER_AGENT})
+        request_timeout = min(timeout, remaining)
+        # Choose the timeout after budget selection: a Flash request may fall back to a Lite
+        # model, which still needs its full thinking allowance. Translations keep their own cap.
+        if flash_timeout is not None and "flash" in model and "lite" not in model:
+            request_timeout = min(request_timeout, flash_timeout)
         try:
-            with urllib.request.urlopen(req, timeout=min(timeout, remaining)) as resp:
+            with urllib.request.urlopen(req, timeout=request_timeout) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             # 400 for the thinking setting: this model does not take it. Ask again without it.
@@ -1101,7 +1106,7 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
     out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first, think=True,
-                      deadline=deadline)  # 15 items with translations
+                      deadline=deadline, flash_timeout=45)  # 15 items with translations
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
     by_i = {r.get("i"): r for r in out if isinstance(r, dict)}

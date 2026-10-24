@@ -1934,6 +1934,49 @@ class FeedConcurrencyTests(unittest.TestCase):
 
 
 class GeminiRetryTests(unittest.TestCase):
+    def test_classification_flash_timeout_preserves_lite_thinking_time_and_shared_deadline(self):
+        import io
+        for deadline, lite_timeout in ((420, 90), (70, 25)):
+            with self.subTest(deadline=deadline), tempfile.TemporaryDirectory() as folder:
+                flash, lite = "gemini-3-flash-preview", "gemini-flash-lite-latest"
+                budget = secnews.GeminiBudget(Path(folder) / "usage.json", [(flash, 18), (lite, 450)])
+                clock, calls = [0.0], []
+                verdict = [{"i": 0, "relevant": True}]
+                def request(req, timeout):
+                    model = req.full_url.split("/models/")[1].split(":")[0]
+                    calls.append((model, timeout, json.loads(req.data)))
+                    if model == flash:
+                        clock[0] += timeout
+                        raise TimeoutError("slow")
+                    return io.BytesIO(json.dumps({"candidates": [{"content": {
+                        "parts": [{"text": json.dumps(verdict)}]}}]}).encode())
+                with mock.patch.object(secnews, "GEMINI_BUDGET", budget), \
+                     mock.patch.object(secnews, "LITE_THINKING", "high"), \
+                     mock.patch.object(secnews.time, "monotonic", side_effect=lambda: clock[0]), \
+                     mock.patch.object(secnews.urllib.request, "urlopen", side_effect=request):
+                    result = secnews.gemini_classify([{"title": "Airport opens a terminal", "summary": ""}],
+                                                     "k", flash, [], [], deadline=deadline)
+                self.assertEqual(result, verdict)
+                self.assertEqual([(m, t) for m, t, _ in calls], [(flash, 45), (lite, lite_timeout)])
+                self.assertEqual(calls[1][2]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
+                self.assertEqual(calls[0][2]["contents"], calls[1][2]["contents"])
+                self.assertEqual(budget.history[budget.day], {flash: 1, lite: 1})
+
+    def test_fast_flash_classification_needs_no_fallback_and_translation_keeps_its_timeout(self):
+        import io
+        calls = []
+        def request(req, timeout):
+            calls.append(timeout)
+            answer = '[{"i": 0, "relevant": true}]' if len(calls) == 1 else '["translated"]'
+            return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": answer}]}}]}).encode())
+        with mock.patch.object(secnews, "GEMINI_BUDGET", None), \
+             mock.patch.object(secnews.urllib.request, "urlopen", side_effect=request):
+            secnews.gemini_classify([{"title": "Airport opens a terminal", "summary": ""}],
+                                    "k", "gemini-2.5-flash", [], [])
+            self.assertEqual(secnews.gemini_translate_batch(["Airport"], "k", model="gemini-2.5-flash"),
+                             ["translated"])
+        self.assertEqual(calls, [45, 120])
+
     def test_all_resting_models_make_no_request_until_rest_expires(self):
         with tempfile.TemporaryDirectory() as folder:
             budget = secnews.GeminiBudget(Path(folder) / "usage.json", [("a", 5), ("b", 5)])
