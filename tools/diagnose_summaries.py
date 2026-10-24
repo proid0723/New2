@@ -14,14 +14,17 @@ def main():
     private = Path(sys.argv[1])
     config = json.loads((private / "feeds.json").read_text())
     request = json.loads((private / "reports/summary-diagnostic-request.json").read_text())
-    feed = config["feeds"][int(request["feed_number"]) - 1]
+    feed = request.get("feed") or config["feeds"][int(request["feed_number"]) - 1]
     raw = secnews.fetch(feed["url"])
     parser = secnews.PARSERS.get(feed.get("type"), secnews.parse_feed)
     items = parser(raw, feed["name"])
     sent_links = {}
     for snapshot in sorted((private / "reports").glob("snapshot-*.json")):
         sent_links.update(json.loads(snapshot.read_text()).get("sent_links", {}))
-    output = {"checked_at": datetime.now(timezone.utc).isoformat(), "articles": []}
+    output = {"checked_at": datetime.now(timezone.utc).isoformat(), "feed_items": len(items),
+              "feed_sample": [{"title": it["title"], "link": it["link"], "source": it["source"],
+                               "date": it["date"].isoformat() if it["date"] else None} for it in items[:10]],
+              "articles": []}
     original = secnews.urllib.request.urlopen
 
     for title in request["titles"]:
