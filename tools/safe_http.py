@@ -25,7 +25,8 @@ def _global(address):
         return False
     if ip.version == 6 and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
-    return ip.is_global and not ip.is_multicast
+    return (ip.is_global and not ip.is_multicast and not ip.is_reserved
+            and not getattr(ip, "is_site_local", False))
 
 
 def normalize_url(url):

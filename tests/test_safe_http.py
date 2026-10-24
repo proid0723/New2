@@ -31,6 +31,7 @@ class SafeHTTPTests(unittest.TestCase):
     def test_private_urls_and_invalid_schemes_are_rejected_before_transport(self):
         urls = ["http://127.0.0.1/a", "http://169.254.169.254/a", "http://10.0.0.1/a", "http://100.64.0.1/a",
                 "http://[::1]/a", "http://[::ffff:127.0.0.1]/a", "http://[2002:7f00:1::]/a",
+                "http://[fec0::1]/a", "http://[100::1]/a",
                 "file:///private", "https://user:password@example.com/a", "http://localhost/a",
                 "https://airport.local/a", "https://example.com:8443/a", "https://example.com/a\nheader"]
         with mock.patch.object(safe_http, "_opener") as opener:

@@ -43,10 +43,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Save private diagnostic report
+        if: always()
         working-directory: .private-config
         env:
           TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
         run: |
+          test -f reports/summary-diagnostic-result.json || exit 0
           basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           echo "::add-mask::$basic"
           auth="AUTHORIZATION: basic $basic"
