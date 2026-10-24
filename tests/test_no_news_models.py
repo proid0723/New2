@@ -47,8 +47,8 @@ class NoNewsModelTests(unittest.TestCase):
             self.run_digest(self.feed("Airport alpha", "Airport beta"), classify)
         text, silent = self.messages[0]
         self.assertTrue(silent)
-        self.assertIn("Gemini 2.5 Flash", text)
-        self.assertIn("Gemini 3.6 Flash", text)
+        self.assertIn(" · ✦2.5 · ✦3.6", text)
+        self.assertNotIn("🤖 판단:", text)
         self.assertNotIn("3.8", text)
         self.assertNotIn("stale", classify.results)
 
@@ -63,8 +63,8 @@ class NoNewsModelTests(unittest.TestCase):
             self.run_digest(self.feed("Airport alpha", "Airport beta"), secnews.GeminiClassifier("unit-key", self.config))
         self.assertEqual([it["title"] for it in request.call_args.args[0]], ["Airport beta"])
         text, silent = self.messages[0]
-        self.assertIn("Gemini 2.5 Flash", text)
-        self.assertIn("Gemini 3.5 Flash Lite", text)
+        self.assertIn("✦2.5", text)
+        self.assertIn("✦3.5L", text)
         self.assertIn("사전 판단 재사용 포함", text)
         self.assertTrue(silent)
 
@@ -86,7 +86,7 @@ class NoNewsModelTests(unittest.TestCase):
              mock.patch.object(secnews, "gemini_classify", return_value=[reject()]):
             self.run_digest(self.feed("Airport alpha"), secnews.GeminiClassifier("unit-key", self.config))
         self.assertEqual(self.messages, [])
-        self.assertIn("Gemini 3.6 Flash", self.alerts[0])
+        self.assertIn(" · ✦3.6", self.alerts[0])
 
     def test_model_failure_still_defers_instead_of_sending_a_no_news_verdict(self):
         with mock.patch.object(secnews, "gemini_classify", side_effect=TimeoutError("offline")):

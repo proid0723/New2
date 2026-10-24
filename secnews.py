@@ -2557,7 +2557,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     if not sent and digests and notice != "off":
         text = wording(config, "no_news").replace("{time}", f"{now.astimezone(KST):%H:%M}")
         if judgement_models:
-            detail = "🤖 판단: " + " · ".join(html.escape(clip_text(model_label(m), 80)) for m in judgement_models)
+            detail = " · ".join(html.escape(clip_text(model_badge(m), 80)) for m in judgement_models)
             if any(judgement_models.values()):
                 detail += " (사전 판단 재사용 포함)"
         elif classification_requested:
@@ -2565,10 +2565,11 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         else:
             reason = "새 기사 없음" if not fresh else "기본 필터에서 제외" if not passed else "AI 분류 미사용"
             detail = "🤖 AI 판단 없음 · " + reason
-        text += "\n\n" + detail
+        separator = " · " if judgement_models else "\n\n"
+        text += separator + detail
         if notice == "admin":
             if alert:
-                alert(f"📭 {now.astimezone(KST):%H}시 정기 발송: 새 기사 {len(fresh)}건 중 보낼 기사 없음\n\n{detail}")
+                alert(f"📭 {now.astimezone(KST):%H}시 정기 발송: 새 기사 {len(fresh)}건 중 보낼 기사 없음{separator}{detail}")
         elif not sender(text, silent=True):
             log("warning: the no-news notice was not delivered")
 
