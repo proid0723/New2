@@ -20,6 +20,7 @@ import fcntl
 import hashlib
 import hmac
 import html
+import itertools
 import json
 import os
 import re
@@ -50,7 +51,7 @@ TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 # Actions logs of a public repository are public. There a run prints only warnings, errors and a
 # short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
 QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
-SUMMARY = re.compile(r"^(warning|error|ai models:|pre-judged|summaries from|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
+SUMMARY = re.compile(r"^(warning|error|collection:|publication dates:|ai models:|pre-judged|summaries from|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
 HELD = []
 
 
@@ -1776,36 +1777,102 @@ def blocked_outlet(item, blocked):
     return any(b in where for b in blocked)
 
 
+def fill_article_dates(groups, config, fetcher):
+    """Share one lookup budget across feeds; retain exact dates and briefly back off failures."""
+    if not groups:
+        return
+    path = config.get("_article_date_cache_path")
+    cached = load_state(Path(path)) if path else {}
+    cached = cached if isinstance(cached, dict) else {}
+    now = config.get("_article_date_now", time.time())
+    cached = {k: v for k, v in cached.items() if isinstance(v, dict)
+              and isinstance(v.get("checked"), (int, float)) and now - 3 * 86400 <= v["checked"] <= now}
+    known = config.get("_known_article_keys", ())
+    queues, missing, hits = [], {}, 0
+    for got, feed, tz, number in groups:
+        scope = hashlib.sha256(json.dumps([feed.get("date_timezone"), feed.get("article_date_pattern"),
+                                          feed.get("fetch_article_dates")]).encode()).hexdigest()[:16]
+        queue = []
+        for item in got:
+            if item["date"] is not None and feed["fetch_article_dates"] != "always":
+                continue
+            key = item_key(item)
+            entry = cached.get(key, {})
+            if entry.get("scope") != scope:
+                entry = {}
+            date = parse_date(entry.get("date"))
+            if date is not None:
+                item["date"] = date
+                hits += 1
+                continue
+            if key in known or title_key(item) in known:
+                continue
+            # A placeholder midnight or fetch time must never be used as a publication time.
+            item["date"], item["date_required"] = None, True
+            if not item["link"].startswith(("https://", "http://")):
+                continue
+            if entry and now - entry["checked"] < 15 * 60:
+                continue
+            queue.append((item, feed, tz, number, key, scope, entry.get("checked", 0)))
+        queues.append(sorted(queue, key=lambda job: job[-1]))
+        missing[number] = (feed, got)
+    # Round-robin feeds so a busy source cannot take every available lookup slot.
+    jobs = [job for row in itertools.zip_longest(*queues) for job in row if job is not None]
+    deadline = time.monotonic() + max(0, float(config.get("article_date_budget_seconds", 20)))
+
+    def lookup(job):
+        item, feed, tz, _, _, _, _ = job
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, False
+        timeout = min(max(0.1, float(feed.get("article_date_timeout_seconds", 6))), remaining)
+        try:
+            raw = fetcher(item["link"], timeout=timeout) if fetcher is fetch else fetcher(item["link"])
+            return parse_article_date(raw, tz, feed.get("article_date_pattern")), True
+        except Exception:
+            return None, True
+
+    attempted_count = 0
+    if jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            for job, (date, attempted) in zip(jobs, pool.map(lookup, jobs)):
+                item, _, _, _, key, scope, _ = job
+                item["date"] = date
+                if attempted:
+                    attempted_count += 1
+                    cached[key] = {"date": date.isoformat() if date is not None else None,
+                                   "checked": now, "scope": scope}
+    if path:
+        try:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
+            temp.replace(path)
+        except OSError:
+            log("warning: publication date cache could not be saved")
+    for number, (feed, got) in missing.items():
+        count = sum(bool(it.get("date_required")) and it["date"] is None for it in got)
+        if count:
+            log(f"warning: {feed_label(feed, number)}: publication time unavailable for {count} item(s)")
+    log(f"publication dates: {hits} cached, {attempted_count} fetched, {len(jobs) - attempted_count} deferred by budget")
+
+
 def collect(config, fetcher=fetch, failed=None, counts=None):
-    items = []
+    started = time.monotonic()
+    items, dates = [], []
     blocked = [b.strip().lower() for b in config.get("blocked_outlets", []) if b.strip()]
     for n, feed in enumerate(config["feeds"]):
         try:
-            raw = fetcher(feed["url"])
+            raw = (fetcher(feed["url"], timeout=float(feed.get("timeout_seconds", 20)))
+                   if fetcher is fetch else fetcher(feed["url"]))
             kind = feed.get("type", "rss")
             parser = {"rss": parse_feed, "cisa_kev": parse_kev}.get(kind) or PARSERS[kind]
             date_tz = ZoneInfo(feed["date_timezone"]) if feed.get("date_timezone") else timezone.utc
             parsed = parser(raw, feed["name"], default_tz=date_tz) if kind == "rss" else parser(raw, feed["name"])
             got = [it for it in parsed if not blocked_outlet(it, blocked)]
             if feed.get("fetch_article_dates"):
-                known = config.get("_known_article_keys", ())
-                todo = [it for it in got if (it["date"] is None or feed["fetch_article_dates"] == "always")
-                        and item_key(it) not in known and title_key(it) not in known
-                        and it["link"].startswith(("https://", "http://"))]
-
-                def date_of(item):
-                    try:
-                        return parse_article_date(fetcher(item["link"]), date_tz, feed.get("article_date_pattern"))
-                    except Exception:
-                        return None
-
-                if todo:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-                        for item, date in zip(todo, pool.map(date_of, todo)):
-                            item["date"] = date
-                    missing = sum(it["date"] is None for it in todo)
-                    if missing:
-                        log(f"warning: {feed_label(feed, n)}: publication time unavailable for {missing} item(s)")
+                dates.append((got, feed, date_tz, n))
             for it in got:
                 it["title"] = strip_outlet(it["title"], it.get("source", ""))
                 it["security_only"] = feed.get("security_only", False)
@@ -1821,6 +1888,8 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
             log(f"warning: {feed_label(feed, n)} failed: {e}")
             if failed is not None:
                 failed.append(feed["name"])
+    fill_article_dates(dates, config, fetcher)
+    log(f"collection: {len(config['feeds'])} feeds, {len(items)} items in {time.monotonic() - started:.1f}s")
     return items
 
 
@@ -2038,7 +2107,12 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             tags = item.get("focus_sectors" if item.get("focus") else "sectors") or [""]
             reviewed[key] = [reason, item["title"][:120], item.get("source", ""), bool(item.get("focus")), tags[0]]
 
-    for item in collect(dict(config, _known_article_keys=seen), fetcher, failed, counts):
+    for item in collect(dict(config, _known_article_keys=seen,
+                             _article_date_cache_path=state_path.with_name("article-dates.json"),
+                             _article_date_now=now.timestamp()), fetcher, failed, counts):
+        if item.get("date_required") and item["date"] is None:
+            decide(item, "date_unknown")
+            continue  # try again later; never put a temporarily undated article into seen
         if config.get("require_publish_date") and (not item["date"] or item["date"] > now):
             # A bounded test must not treat an undated or future article as recent, or guess
             # its timezone. Leave it unsent until its publication time can be established.
@@ -2349,7 +2423,9 @@ def run_instant(config, state, state_path, sender, now, fetcher=fetch, translate
 
     candidates = []
     known = set(seen) | set(checked) | {k[1:] for k in checked if k.startswith("!")}
-    for item in collect(dict(config, feeds=feeds, _known_article_keys=known), fetcher):
+    for item in collect(dict(config, feeds=feeds, _known_article_keys=known,
+                             _article_date_cache_path=state_path.with_name("article-dates.json"),
+                             _article_date_now=now.timestamp()), fetcher):
         if item["date"] and item["date"] > now + timedelta(hours=1):
             item["date"] = min(item["date"] - timedelta(hours=9), now)
         # Forced items come through search feeds that lag, so they get a day instead of three hours.

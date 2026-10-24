@@ -141,6 +141,70 @@ class ParseTests(unittest.TestCase):
         (item,) = secnews.collect(cfg, failed_page)
         self.assertIsNone(item["date"])  # never present a placeholder midnight as the exact publication time
 
+    def test_publication_cache_reuses_exact_dates_and_backs_off_failed_pages(self):
+        raw = (b'<rss><channel><item><title>Example A</title><link>https://example.com/a</link>'
+               b'<pubDate>2026-10-15T00:00:00+09:00</pubDate></item></channel></rss>')
+        page = b'<meta property="article:published_time" content="2026-10-15T10:30:00+09:00">'
+        calls, available = [], [False]
+        def fetcher(url):
+            if url == "feed": return raw
+            calls.append(url)
+            if not available[0]: raise TimeoutError("slow")
+            return page
+        with tempfile.TemporaryDirectory() as folder:
+            cfg = {"feeds": [{"name": "Wire", "url": "feed", "fetch_article_dates": "always"}],
+                   "_article_date_cache_path": Path(folder) / "dates.json", "_article_date_now": NOW.timestamp()}
+            self.assertIsNone(secnews.collect(cfg, fetcher)[0]["date"])
+            available[0] = True
+            cfg["_article_date_now"] += 300
+            self.assertIsNone(secnews.collect(cfg, fetcher)[0]["date"])
+            self.assertEqual(len(calls), 1)  # failed pages wait fifteen minutes
+            cfg["_article_date_now"] += 601
+            expected = datetime(2026, 10, 15, 10, 30, tzinfo=secnews.KST)
+            self.assertEqual(secnews.collect(cfg, fetcher)[0]["date"], expected)
+            cfg["_article_date_now"] += 3600
+            self.assertEqual(secnews.collect(cfg, fetcher)[0]["date"], expected)
+            self.assertEqual(len(calls), 2)  # successful dates survive later collections
+            cfg["feeds"][0]["article_date_pattern"] = "Changed parser"
+            secnews.collect(cfg, fetcher)
+            self.assertEqual(len(calls), 3)  # a changed parsing rule invalidates old cache entries
+
+    def test_publication_lookup_budget_is_shared_fairly_and_does_not_cache_unattempted_items(self):
+        clock, pages = [0.0], []
+        def fetcher(url):
+            if url in ("feed1", "feed2"):
+                return (f'<rss><channel><item><title>A</title><link>https://example.com/{url}/a</link></item>'
+                        f'<item><title>B</title><link>https://example.com/{url}/b</link></item></channel></rss>').encode()
+            pages.append(url)
+            clock[0] += 2
+            raise TimeoutError("slow")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "dates.json"
+            cfg = {"feeds": [{"name": u, "url": u, "fetch_article_dates": True} for u in ("feed1", "feed2")],
+                   "article_date_budget_seconds": 3, "_article_date_cache_path": path}
+            with mock.patch.object(secnews.time, "monotonic", side_effect=lambda: clock[0]), \
+                 mock.patch.object(secnews.concurrent.futures, "ThreadPoolExecutor") as executor:
+                executor.return_value.__enter__.return_value.map.side_effect = lambda fn, jobs: map(fn, jobs)
+                items = secnews.collect(cfg, fetcher)
+            self.assertEqual(pages, ["https://example.com/feed1/a", "https://example.com/feed2/a"])
+            self.assertTrue(all(it["date"] is None and it["date_required"] for it in items))
+            self.assertEqual(len(json.loads(path.read_text())), 2)  # deferred jobs are not failed requests
+
+    def test_production_fetches_receive_feed_and_article_timeout_limits(self):
+        import io
+        calls = []
+        def urlopen(req, timeout):
+            calls.append((req.full_url, timeout))
+            raw = (b'<rss><channel><item><title>A</title><link>https://example.com/a</link></item></channel></rss>'
+                   if req.full_url.endswith('/rss') else
+                   b'<meta property="article:published_time" content="2026-10-15T01:00:00Z">')
+            return io.BytesIO(raw)
+        cfg = {"feeds": [{"name": "Wire", "url": "https://example.com/rss", "fetch_article_dates": True,
+                          "timeout_seconds": 5, "article_date_timeout_seconds": 4}]}
+        with mock.patch.object(secnews.urllib.request, "urlopen", side_effect=urlopen):
+            secnews.collect(cfg)
+        self.assertEqual(calls, [("https://example.com/rss", 5), ("https://example.com/a", 4)])
+
     def test_html_page_is_reported(self):
         with self.assertRaisesRegex(ValueError, "HTML page"):
             secnews.parse_feed(b"<!doctype html><html><head></head></html>", "X")
@@ -489,6 +553,30 @@ class RunTests(unittest.TestCase):
         sent = secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=lambda u: feed, bootstrap_send=True)
         self.assertEqual([it["title"] for it in sent], ["Airport booking system zero-day exploited"])
         self.assertEqual(sent[0]["date"], NOW - timedelta(minutes=5))
+
+    def test_missing_required_publication_date_is_retried_without_marking_seen(self):
+        title = "Airport booking system zero-day exploited"
+        raw = self.rss((title, "Thu, 15 Oct 2026 00:00:00 +0900"))
+        page = b'<meta property="article:published_time" content="2026-10-15T02:55:00Z">'
+        cfg = dict(CONFIG, feeds=[{"name": "Wire", "url": "feed", "fetch_article_dates": "always"}])
+        calls, available = [], [False]
+        def fetcher(url):
+            if url == "feed": return raw
+            calls.append(url)
+            if not available[0]: raise TimeoutError("slow")
+            return page
+        self.assertEqual(secnews.run(cfg, self.state, self.sender, now=NOW, fetcher=fetcher, bootstrap_send=True), [])
+        item = secnews.parse_feed(raw, "Wire")[0]
+        self.assertNotIn(secnews.item_key(item), secnews.load_state(self.state)["seen"])
+        available[0] = True
+        self.assertEqual(secnews.run(cfg, self.state, self.sender, now=NOW + timedelta(minutes=5),
+                                    fetcher=fetcher, force=True, bootstrap_send=True), [])
+        self.assertEqual(len(calls), 1)
+        sent = secnews.run(cfg, self.state, self.sender, now=NOW + timedelta(minutes=16),
+                           fetcher=fetcher, force=True, bootstrap_send=True)
+        self.assertEqual([it["title"] for it in sent], [title])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(self.state.with_name("article-dates.json").exists())
 
     def test_instant_does_not_refetch_publication_times_for_old_articles(self):
         feed = self.rss(("Airport ransomware attack", "Thu, 15 Oct 2026 00:00:00 +0900"))
