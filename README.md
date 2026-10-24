@@ -148,6 +148,15 @@ python3 secnews.py --dry-run               # 보내지 않고 메시지만 출�
 - 레포를 비공개로 바꾸면 Actions 무료 시간(월 2,000분)을 넘어 유료가 됩니다.
 # Checking selection changes
 
+Classification responses are validated inside model fallback: malformed fields move to the next
+available model without weakening type checks. Format errors receive a brief rest and do not count
+toward the two-overloaded-Flash shortcut to Lite. Model order and daily limits stay configurable.
+
+Half-past preparation records completion separately from attempts. Incomplete preparation retries
+at five-minute intervals, up to three attempts before minute 55, reusing its successful judgements.
+A genuinely empty candidate set is complete and needs no retry. Preparation sends no digest or
+no-news notice; ordinary digest retry rules still apply on the hour.
+
 The **Selection quality evaluation** workflow compares a frozen private baseline with current
 settings on identical labelled examples, including their saved context. It records false positives,
 false negatives, precision/recall and changed examples in the private repository. Unreviewed cases

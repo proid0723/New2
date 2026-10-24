@@ -957,7 +957,7 @@ DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 F
 
 
 def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False, think=False,
-                deadline=None, flash_timeout=None):
+                deadline=None, flash_timeout=None, validate=None):
     """One Gemini request that answers in JSON. Raises on any failure. think: a Lite model thinks
     first (LITE_THINKING), for judging news; Flash models think on their own."""
 
@@ -967,16 +967,18 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             config["thinkingConfig"] = {"thinkingLevel": LITE_THINKING}
         return json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config}).encode()
 
-    busy = set()  # models that answered "overloaded" to this request
+    busy, overloaded = set(), set()
 
-    def turned_away(model, minutes=15):
+    def turned_away(model, minutes=15, load_failure=True):
         """Note a busy model. Google counts turned-away requests against the day's quota too, and when
         two Flash models are busy the others usually are as well: then this request goes to Lite.
         The model also rests for a while, so the next requests do not knock on it again."""
         busy.add(model)
+        if load_failure:
+            overloaded.add(model)
         if GEMINI_BUDGET is not None:
             GEMINI_BUDGET.rest(model, minutes)
-        if (GEMINI_BUDGET is not None and sum(1 for m in busy if "lite" not in m) >= 2
+        if (GEMINI_BUDGET is not None and sum(1 for m in overloaded if "lite" not in m) >= 2
                 and any("lite" in m and GEMINI_BUDGET.used.get(m, 0) < cap and m not in busy
                         for m, cap in GEMINI_BUDGET.models)):
             busy.update(m for m, _ in GEMINI_BUDGET.models if "lite" not in m)
@@ -1046,10 +1048,12 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
         try:
             # Models sometimes add a second JSON value or a remark after the answer: keep the first value.
             answer, _ = json.JSONDecoder().raw_decode(data["candidates"][0]["content"]["parts"][0]["text"].strip())
-        except (KeyError, IndexError, TypeError, ValueError) as e:
+            if validate is not None:
+                answer = validate(answer)
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
             if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
-                log(f"warning: Gemini {model}: unusable answer ({e}); trying another model")
-                turned_away(model)
+                log(f"warning: Gemini {model}: unusable answer ({type(e).__name__}: {e}); trying another model")
+                turned_away(model, minutes=1, load_failure=False)
                 continue
             raise
         # The exact model behind an alias such as gemini-flash-latest, for the article's AI mark.
@@ -1134,14 +1138,25 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
+    validate = lambda out: validate_classification(out, len(items), sectors, focus_sectors)
     out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first, think=True,
-                      deadline=deadline, flash_timeout=45)  # 15 items with translations
-    if not isinstance(out, list) or len(out) != len(items):
+                      deadline=deadline, flash_timeout=45, validate=validate)
+    return validate(out)  # also protect callers that replace the transport in offline tests
+
+
+def validate_classification(out, count, sectors, focus_sectors):
+    """Reject invalid fields before accepting a model response or choosing its badge."""
+    if not isinstance(out, list) or len(out) != count:
         raise ValueError("classification list does not match the input")
     for row in out:
         if (not isinstance(row, dict) or type(row.get("i")) is not int
-                or not 0 <= row["i"] < len(items) or not verdict_types_valid(row, complete=True)):
+                or not 0 <= row["i"] < count):
             raise ValueError("classification fields have invalid types")
+        for field in ("relevant", "focus", "urgent", "already_sent"):
+            if type(row.get(field)) is not bool:
+                raise ValueError(f"classification row {row['i']}: {field} must be boolean")
+        if not verdict_types_valid(row, complete=True):
+            raise ValueError(f"classification row {row['i']}: invalid text or duplicate field type")
         duplicate = row.get("dup_of")
         if duplicate is not None and (type(duplicate) is not int or not 0 <= duplicate < row["i"]):
             raise ValueError("classification duplicate reference is invalid")
@@ -1149,9 +1164,9 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
             if field in row and row[field] not in allowed + [OTHER_SECTOR]:
                 raise ValueError("classification category is invalid")
     by_i = {r["i"]: r for r in out}
-    if set(by_i) != set(range(len(items))):
+    if set(by_i) != set(range(count)):
         raise ValueError("classification is missing items")
-    return [by_i[n] for n in range(len(items))]
+    return [by_i[n] for n in range(count)]
 
 
 def verdict_types_valid(row, complete=False):
@@ -2291,6 +2306,18 @@ def next_digest_minutes(state, config, now):
 
 
 FEED_ALERT_AFTER = 3  # digests in a row a feed may fail before the owner hears about it
+PREJUDGE_MAX_ATTEMPTS = 3
+PREJUDGE_RETRY_SECONDS = 5 * 60
+
+
+def prejudge_ready(state, upcoming, now):
+    pre = (state or {}).get("prejudged") or {}
+    if pre.get("for") != upcoming:
+        return True
+    # Legacy empty caches include failed attempts, not a confirmed no-news result.
+    complete = pre.get("complete", bool(pre.get("items")))
+    return (not complete and pre.get("attempts", 1) < PREJUDGE_MAX_ATTEMPTS
+            and now.timestamp() >= pre.get("retry_at", 0))
 
 
 def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=False, translate=None, force=False,
@@ -2308,9 +2335,9 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         # the last half hour's news (Gemini is often overloaded right on the hour, US/EU working time).
         upcoming = f"{(now + timedelta(minutes=30)).astimezone(KST):%Y-%m-%d %H}"
         if (classify is not None and hasattr(classify, "cache") and state is not None
-                and config.get("prejudge", True) and 30 <= now.astimezone(KST).minute < 35
+                and config.get("prejudge", True) and 30 <= now.astimezone(KST).minute < 55
                 and not quiet(config, now + timedelta(minutes=30))
-                and (state.get("prejudged") or {}).get("for") != upcoming):
+                and prejudge_ready(state, upcoming, now)):
             run(config, state_path, sender, now, fetcher, translate=translate, force=True, classify=classify,
                 prejudge=upcoming)
             state = load_state(state_path)
@@ -2412,22 +2439,16 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     held = []  # items Gemini could not judge in a digest that goes out anyway: kept for the next one
     if classify and news:
         pre = (state or {}).get("prejudged") or {}
-        if hasattr(classify, "cache") and not prejudge and pre.get("for") == hour:
+        if hasattr(classify, "cache") and pre.get("for") == (prejudge or hour):
             classify.cache = pre.get("items") or {}
         # Gemini also spots stories sent in an earlier digest, across languages.
         kept = classify(news, [told_line(r) for r in recent])
-        if prejudge:
-            stored = dict(load_state(state_path) or state or {},
-                          prejudged={"for": prejudge, "items": dict(getattr(classify, "results", {}))})
-            state_path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
-            log(f"pre-judged {len(stored['prejudged']['items'])} item(s) for the {prejudge[-2:]}:00 digest")
-            return []
         # Gemini unavailable (overloaded, timing out): nothing goes out on keyword judgement alone.
         # The digest tries once more five minutes later; if that fails too, this hour is skipped
         # and its news, still unsent, goes out with the next hour's digest. The admin hears why.
         judged_any = any(not it.get("keyword_only") for it in kept)
         tries = ((state or {}).get("deferred_tries", 0) + 1 if (state or {}).get("deferred_hour") == hour else 1)
-        if getattr(classify, "failed", False) and not force and tries >= 2 and judged_any:
+        if not prejudge and getattr(classify, "failed", False) and not force and tries >= 2 and judged_any:
             # Second failure, but the half-past run judged part of the news: that part goes out now,
             # the rest (never judged) waits for the next digest.
             held = [it for it in kept if it.get("keyword_only")]
@@ -2436,7 +2457,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             if alert:
                 alert(f"⏳ {now.astimezone(KST).hour}시 정기 발송: AI 응답이 늦어 미리 판단해 둔 기사만 보내고, "
                       f"나머지 {len(held)}건은 다음 정기 발송에 함께 보내요.")
-        elif getattr(classify, "failed", False) and not force:
+        elif not prejudge and getattr(classify, "failed", False) and not force:
             log(f"warning: Gemini is unavailable; digest attempt {tries} put off")
             stored = dict(load_state(state_path) or state or {}, deferred_hour=hour, deferred_tries=tries)
             state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2446,10 +2467,29 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
                 alert(f"⏳ {h}시 정기 발송: AI 응답이 늦어 5분 뒤 한 번 더 시도해요." if tries == 1 else
                       f"⏳ {h}시 정기 발송: AI가 계속 응답하지 않아 이번 기사는 다음 정기 발송에 함께 보내요.")
             return []
-        for it in news:
-            if it not in kept and it not in held:
-                decide(it, it.get("drop_reason", "gemini_irrelevant"))
-        news = sorted(kept, key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
+        if not prejudge:
+            for it in news:
+                if it not in kept and it not in held:
+                    decide(it, it.get("drop_reason", "gemini_irrelevant"))
+            news = sorted(kept, key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
+    if prejudge:
+        pre = (state or {}).get("prejudged") or {}
+        same = pre.get("for") == prejudge
+        saved = dict(pre.get("items") or {}) if same else {}
+        results = getattr(classify, "results", {})
+        saved.update({cache_key(it): results[cache_key(it)] for it in news if cache_key(it) in results})
+        complete = not news or not getattr(classify, "failed", False)
+        attempts = pre.get("attempts", 1) + 1 if same else 1
+        stored = dict(load_state(state_path) or state or {}, prejudged={
+            "for": prejudge, "items": saved, "complete": complete, "attempts": attempts,
+            "retry_at": now.timestamp() + PREJUDGE_RETRY_SECONDS if not complete else 0})
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+        log(f"pre-judged {len(saved)} item(s) for the {prejudge[-2:]}:00 digest")
+        log(f"pre-judging status: {'complete' if complete else 'incomplete'}, attempt {attempts} of {PREJUDGE_MAX_ATTEMPTS}")
+        if not complete:
+            log(f"warning: pre-judging incomplete (attempt {attempts} of {PREJUDGE_MAX_ATTEMPTS})")
+        return []
     # The 06:00 round-up carries the whole night, so its caps are larger.
     factor = config.get("morning_cap_factor", 1.5) if morning(config, now) and not force else 1
     suffix = " · 🌅 밤사이 모음" if factor != 1 else ""

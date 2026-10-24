@@ -26,6 +26,7 @@ METRICS = [re.compile(p) for p in (
     rf"sent {N} of {N} new items",
     rf"subscribers: \+{N} -{N}",
     rf"pre-judged {N} item\(s\) for the [0-9]{{2}}:00 digest",
+    rf"pre-judging status: (?:complete|incomplete), attempt {N} of {N}",
     rf"classified {N} item\(s\) with Gemini; dropped {N} as off-topic, {N} as duplicates(?: \(partly\))?",
     rf"instant alerts: {N} candidate\(s\), sent {N}, {N} dropped by Gemini(?: quietly)?",
     rf"review snapshot: {N} items",
