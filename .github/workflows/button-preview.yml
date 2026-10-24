@@ -43,5 +43,6 @@ jobs:
         with:
           name: preview-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

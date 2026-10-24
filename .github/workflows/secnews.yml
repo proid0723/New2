@@ -165,6 +165,7 @@ jobs:
         with:
           name: runtime-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
       # Tests publish increments only. Never save their .state copy over production news state.
@@ -292,6 +293,7 @@ jobs:
         with:
           name: watchdog-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
@@ -336,5 +338,6 @@ jobs:
         with:
           name: chat-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
