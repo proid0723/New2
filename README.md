@@ -92,7 +92,14 @@ cron-job.org: 5분마다 `POST https://api.github.com/repos/<owner>/<repo>/actio
 - Actions → secnews → **Run workflow**: `test_me`가 기본으로 켜져 있어 **관리자에게만** 현재 뉴스를 보냅니다. 보낸 기록·구독자 목록은 바꾸지 않습니다.
 - `test_me`를 끄면 모든 구독자에게 바로 보냅니다(`reset`을 켜면 보낸 기록을 지우고 다시 보냄).
 - `list_chats`: 아직 처리되지 않은 봇 메시지 목록 (이름·ID 가림).
-- 공개 로그에는 평소 구독자 수·발송 건수·경고만 찍히고, 실행이 실패하면 전체 로그가 찍힙니다. 전체 로그를 보려면 `verbose`를 켜고 실행하세요.
+- 공개 로그에는 건수·소요시간·오류 종류만 남깁니다. 기사 제목·URL·채팅 정보·외부 응답·traceback은
+  실패하거나 `verbose`를 켜도 공개하지 않습니다. 설정한 API 키·토큰은 상세 진단에서도 가립니다.
+- 성공한 실행의 오류 상세는 암호화 운영 캐시의 `private-diagnostics.json`에 최근 20회·회당 최대 64KiB로
+  보관합니다. `review_now` 실행 시 비공개 검토 보고서의 `diagnostics`에서 확인할 수 있습니다.
+- 실패 실행·관리자 테스트·보조 도구·상세 모드의 필요한 진단은 암호화된 Actions 첨부파일로도 남깁니다
+  (보관7일). `tools/state_cache.py open --archive FILE.enc --state PRIVATE_DIR`로 복호화하며,
+  키는 기존 `TELEGRAM_BOT_TOKEN` 환경변수에서 읽습니다. 첨부파일에는 평문을 올리지 않습니다.
+- `list_chats`의 공개 출력은 인원수만 보여주며, 세부 목록은 암호화 첨부파일에 보관합니다.
 - push와 PR에는 단위 테스트만 돌고 메시지는 보내지 않습니다.
 
 ## 고장 알림 (관리자에게만)

@@ -14,8 +14,21 @@ jobs:
           repository: ${{ github.repository_owner }}/New2_config
           token: ${{ secrets.CONFIG_REPO_TOKEN }}
           path: .private-config
+      - name: Install pinned dependency
+        run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       - name: Diagnose without sending news
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: python3 tools/diagnose_summaries.py .private-config
+      - name: Upload encrypted failure diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .diagnostics-cache/*.enc
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Save private diagnostic report
         working-directory: .private-config
         run: |

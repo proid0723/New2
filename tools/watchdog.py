@@ -55,4 +55,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from private_logs import execute
+    sys.exit(execute(main, label="watchdog"))

@@ -6,3 +6,5 @@ feeds.json
 .private-config/
 .env
 .env.*
+.diagnostics-work/
+.diagnostics-cache/

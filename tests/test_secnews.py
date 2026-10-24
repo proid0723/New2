@@ -2229,7 +2229,7 @@ class QuietLogTests(unittest.TestCase):
             self.assertEqual(out.getvalue().splitlines(),
                              ["5 recipient(s)", "warning: source 7 failed: timeout", "sent 2 of 31 new items"])
             with contextlib.redirect_stderr(out):
-                secnews.show_held_log()  # a failed run prints everything
+                secnews.show_held_log()  # the hosted entrypoint captures this detail privately
             self.assertIn("source 3: 50 items", out.getvalue())
         finally:
             secnews.QUIET, secnews.HELD[:] = saved

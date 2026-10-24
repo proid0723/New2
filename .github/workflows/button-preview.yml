@@ -36,3 +36,12 @@ jobs:
           SECNEWS_CONFIG: .private-config/feeds.json
           PREVIEW_STYLE: ${{ inputs.style }}
         run: python3 tools/preview_buttons.py
+      - name: Upload encrypted failure diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .diagnostics-cache/*.enc
+          if-no-files-found: ignore
+          retention-days: 7

@@ -29,7 +29,7 @@ on:
         type: boolean
         default: false
       verbose:
-        description: 'Print the full log (normally only a summary; the full log is printed when a run fails)'
+        description: 'Keep detailed encrypted diagnostics; public output always contains structural summaries only'
         type: boolean
         default: false
       item_style:
@@ -158,6 +158,15 @@ jobs:
           else
             python3 secnews.py --now $RESET_FLAG
           fi
+      - name: Upload encrypted failure diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .diagnostics-cache/*.enc
+          if-no-files-found: ignore
+          retention-days: 7
       # Tests publish increments only. Never save their .state copy over production news state.
       - name: Record administrator test API usage
         if: always() && inputs.test_me && !inputs.scheduled && env.HAS_PRIVATE_CONFIG == 'true'
@@ -268,12 +277,23 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+      - name: Install pinned dependency
+        run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       - name: Check that the timer still runs
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           ADMIN_CHAT: ${{ secrets.TELEGRAM_TEST_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_IDS }}
         run: python3 tools/watchdog.py
+      - name: Upload encrypted failure diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .diagnostics-cache/*.enc
+          if-no-files-found: ignore
+          retention-days: 7
 
   chats:
     if: github.event_name == 'workflow_dispatch' && inputs.list_chats
@@ -309,3 +329,12 @@ jobs:
           # The chat-id secret is left out on purpose: GitHub would mask those ids in this log.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: python3 tools/get_chat_ids.py
+      - name: Upload encrypted diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .diagnostics-cache/*.enc
+          if-no-files-found: ignore
+          retention-days: 7

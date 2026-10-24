@@ -48,8 +48,8 @@ TELEGRAM_LIMIT = 4096
 TRACKING_PARAMS = re.compile(r"^(utm_|fbclid$|gclid$|mc_)")
 
 
-# Actions logs of a public repository are public. There a run prints only warnings, errors and a
-# short summary; the full log is printed only when the run fails (or with SECNEWS_VERBOSE=1).
+# Internal detail is buffered until the entrypoint drains it into private diagnostics.
+# Hosted stdout/stderr are independently filtered by tools.private_logs, even on failure/verbose.
 QUIET = bool(os.environ.get("GITHUB_ACTIONS")) and not os.environ.get("SECNEWS_VERBOSE")
 SUMMARY = re.compile(r"^(warning|error|collection:|publication dates:|ai models:|pre-judged|summaries from|sent \d|subscribers:|instant alerts:|night notice|review snapshot|\d+ recipient)")
 HELD = []
@@ -2491,7 +2491,7 @@ def explain(state, query):
 REVIEW_LIMIT = 6000
 
 
-def write_review(folder, stats, now, name=None):
+def write_review(folder, stats, now, name=None, diagnostics=None):
     """The week's decisions as a file the workflow commits to the private settings repo, where the
     weekly review reads them. Feeds appear by number, as in the logs; the settings name them."""
     local = now.astimezone(KST)
@@ -2509,6 +2509,8 @@ def write_review(folder, stats, now, name=None):
             "fields": ["reason", "title", "source", "focus", "category"],
             "items": list(stats.get("review", {}).values()),
             **({"sent_links": stats["links"]} if "links" in stats else {})}
+    if diagnostics:
+        body["diagnostics"] = diagnostics
     folder.mkdir(parents=True, exist_ok=True)
     (folder / (name or f"{local:%G-W%V}.json")).write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -2716,7 +2718,8 @@ def main(argv=None):
         stats = dict(stored.get("stats") or {})
         # Snapshots also list the links of the last three days' sent items, to check where they lead.
         stats["links"] = {d[2]: k for k, d in (stored.get("decisions") or {}).items() if d and d[0] == "sent"}
-        write_review(state_path.parent / "reviews", stats, now, f"snapshot-{now.astimezone(KST):%Y-%m-%d-%H%M}.json")
+        write_review(state_path.parent / "reviews", stats, now, f"snapshot-{now.astimezone(KST):%Y-%m-%d-%H%M}.json",
+                     diagnostics=load_state(state_path.with_name("private-diagnostics.json")))
         log(f"review snapshot: {len(stats.get('review', {}))} items")
         return 0
 
@@ -2825,11 +2828,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    try:
-        code = main()
-    except BaseException:
-        show_held_log()
-        raise
-    if code:
-        show_held_log()
-    sys.exit(code)
+    from tools.private_logs import execute
+    sys.exit(execute(main, label="backup" if "--backup-subscribers" in sys.argv else "secnews",
+                     drain=show_held_log))
