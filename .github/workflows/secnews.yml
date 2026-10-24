@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       # The only package: cryptography, for the subscriber file's AES-256-GCM. Exact files only.
       - name: Install cryptography
         run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
@@ -78,10 +78,10 @@ jobs:
       HAS_PRIVATE_CONFIG: ${{ secrets.CONFIG_REPO_TOKEN != '' }}
       SECNEWS_TEST_USAGE_DIR: ${{ github.workspace }}/.private-config/api-usage
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Fetch private settings
         if: env.HAS_PRIVATE_CONFIG == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ github.repository_owner }}/New2_config
           token: ${{ secrets.CONFIG_REPO_TOKEN }}
@@ -91,14 +91,14 @@ jobs:
       # migration when no encrypted cache exists; it is never written by this workflow.
       - name: Restore encrypted runtime state
         id: encrypted-state
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .state-cache
           key: secnews-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: secnews-encrypted-state-v1-
       - name: Restore sent-item state
         if: steps.encrypted-state.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .state
           key: secnews-state-${{ github.run_id }}-${{ github.run_attempt }}
@@ -161,7 +161,7 @@ jobs:
       - name: Upload encrypted failure diagnostics
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runtime-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
@@ -264,7 +264,7 @@ jobs:
         run: python3 tools/state_cache.py seal
       - name: Save encrypted runtime state
         if: success() && !(inputs.test_me && !inputs.scheduled)
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .state-cache
           key: secnews-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
@@ -277,7 +277,7 @@ jobs:
     permissions:
       actions: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install pinned dependency
         run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       - name: Check that the timer still runs
@@ -289,7 +289,7 @@ jobs:
       - name: Upload encrypted failure diagnostics
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: watchdog-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
@@ -304,17 +304,17 @@ jobs:
     env:
       SECNEWS_STATE: ${{ github.workspace }}/.state/seen.json
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Restore encrypted runtime state
         id: encrypted-state
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .state-cache
           key: secnews-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: secnews-encrypted-state-v1-
       - name: Restore subscriber list
         if: steps.encrypted-state.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .state
           key: secnews-state-${{ github.run_id }}
@@ -334,7 +334,7 @@ jobs:
       - name: Upload encrypted diagnostics
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: chat-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc

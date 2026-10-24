@@ -1,6 +1,11 @@
 name: Article summary diagnostic
 on:
   workflow_dispatch:
+    inputs:
+      collection_check:
+        description: 'Read-only check of all feed transports; no AI, messages or news-state changes'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -8,22 +13,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ github.repository_owner }}/New2_config
           token: ${{ secrets.CONFIG_REPO_TOKEN }}
           path: .private-config
+          persist-credentials: false
       - name: Install pinned dependency
         run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
       - name: Diagnose without sending news
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: python3 tools/diagnose_summaries.py .private-config
+          COLLECTION_CHECK: ${{ inputs.collection_check }}
+        run: |
+          if [ "$COLLECTION_CHECK" = 'true' ]; then
+            python3 tools/verify_collection.py .private-config
+          else
+            python3 tools/diagnose_summaries.py .private-config
+          fi
       - name: Upload encrypted failure diagnostics
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: summary-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: .diagnostics-cache/*.enc
@@ -32,11 +44,16 @@ jobs:
           retention-days: 7
       - name: Save private diagnostic report
         working-directory: .private-config
+        env:
+          TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
         run: |
+          basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
           git config user.name github-actions[bot]
           git config user.email github-actions[bot]@users.noreply.github.com
           git add reports/summary-diagnostic-result.json
           git diff --cached --quiet && exit 0
           git commit -m 'Record article summary diagnostics'
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git -c http.extraheader="$auth" pull --rebase origin main
+          git -c http.extraheader="$auth" push origin HEAD:main

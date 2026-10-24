@@ -20,6 +20,7 @@ N = r"[0-9]{1,7}"
 METRICS = [re.compile(p) for p in (
     rf"{N} recipient\(s\)",
     rf"collection: {N} feeds, {N} items in {N}\.[0-9]s",
+    rf"collection check: {N} of {N} feeds",
     rf"publication dates: {N} cached, {N} fetched, {N} deferred by budget",
     rf"sent {N} of {N} new items",
     rf"subscribers: \+{N} -{N}",
@@ -196,7 +197,7 @@ def save_diagnostics(capture, code, label):
 def execute(main, label="secnews", drain=None):
     if not os.environ.get("GITHUB_ACTIONS"):
         return main()
-    if label not in ("secnews", "backup", "preview", "summary", "chats", "watchdog"):
+    if label not in ("secnews", "backup", "preview", "summary", "chats", "watchdog", "collection"):
         raise ValueError("unknown diagnostic label")
     capture = Capture()
     out, err = PublicStream(sys.stdout, capture, "stdout"), PublicStream(sys.stderr, capture, "stderr")

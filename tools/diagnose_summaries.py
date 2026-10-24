@@ -25,7 +25,7 @@ def main():
               "feed_sample": [{"title": it["title"], "link": it["link"], "source": it["source"],
                                "date": it["date"].isoformat() if it["date"] else None} for it in items[:10]],
               "articles": []}
-    original = secnews.urllib.request.urlopen
+    original = secnews.urlopen_public
 
     for title in request["titles"]:
         item = next((i for i in items if i["title"] == title), None)
@@ -38,9 +38,9 @@ def main():
             continue
         row["link"] = item["link"]
 
-        def traced(req, timeout=20):
+        def traced(req, timeout=20, **kwargs):
             url = req if isinstance(req, str) else req.full_url
-            with original(req, timeout=timeout) as response:
+            with original(req, timeout=timeout, **kwargs) as response:
                 data = response.read(1_000_000)
                 headers = response.headers
                 final = response.geturl()
@@ -59,14 +59,14 @@ def main():
             result.headers = headers
             return result
 
-        secnews.urllib.request.urlopen = traced
+        secnews.urlopen_public = traced
         try:
             row["summary"] = secnews.page_summary(item, timeout=15)
             row["title_match_words"] = [w for w in re.findall(r"\w+", title) if len(w) >= 3]
         except Exception as error:
             row["error"] = f"{type(error).__name__}: {error}"
         finally:
-            secnews.urllib.request.urlopen = original
+            secnews.urlopen_public = original
     destination = private / "reports/summary-diagnostic-result.json"
     destination.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n")
     print("Private summary diagnostic saved; no AI or Telegram calls were made.")

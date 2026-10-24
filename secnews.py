@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from tools.safe_http import urlopen_public, normalize_url, URLPolicyError
 
 CONFIG_PATH = Path(__file__).with_name("feeds.json")
 DEFAULT_STATE = Path.home() / ".local" / "state" / "secnews" / "seen.json"
@@ -71,9 +72,9 @@ def show_held_log():
 
 # ---------------------------------------------------------------- fetching
 
-def fetch(url, timeout=20):
+def fetch(url, timeout=20, max_bytes=8 * 1024 * 1024, truncate=False):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urlopen_public(req, timeout=timeout, max_bytes=max_bytes, truncate=truncate) as resp:
         return resp.read()
 
 
@@ -160,19 +161,24 @@ def parse_xml(raw):
     enc = (m.group(1) if m else "utf-8").lower()
     if enc.replace("-", "").replace("_", "") in ("utf8", "usascii", "ascii", "iso88591"):
         try:
-            return ET.fromstring(raw)
+            return ET.fromstring(raw, parser=ET.XMLParser(target=_NoDTD()))
         except ET.ParseError:
             text = raw.decode(enc if enc != "usascii" else "ascii", errors="replace")
     else:
         text = raw.decode(enc, errors="replace")
     text = re.sub(r"^\s*<\?xml[^>]*\?>", "", text, count=1)
     try:
-        return ET.fromstring(text)
+        return ET.fromstring(text, parser=ET.XMLParser(target=_NoDTD()))
     except ET.ParseError:
         # Some news feeds slip a bare "&" or a control character into a headline; mend and retry.
         text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
         text = re.sub(r"&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#x[0-9a-fA-F]+);)", "&amp;", text)
-        return ET.fromstring(text)
+        return ET.fromstring(text, parser=ET.XMLParser(target=_NoDTD()))
+
+
+class _NoDTD(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        raise ValueError("DTD declarations are not supported in public feeds")
 
 
 def parse_feed(raw, source, default_tz=timezone.utc):
@@ -617,22 +623,36 @@ def model_badge(model):
 TITLE_LINK_SPACES = " " * 90  # plain linked spaces; Telegram controls their displayed width
 
 
+def clip_text(text, units):
+    """Bound display text in UTF-16 units without cutting a surrogate pair."""
+    text = str(text)
+    raw = text.encode("utf-16-le", "replace")
+    if len(raw) <= units * 2:
+        return raw.decode("utf-16-le")
+    return raw[:max(0, units - 1) * 2].decode("utf-16-le", "ignore").rstrip() + "…"
+
+
 def format_item(item, hide_sector=None, key="sectors"):
     when = item["date"].astimezone(KST).strftime("%m-%d %H:%M") if item["date"] else ""
-    title = html.escape(item.get("display_title", item["title"]))
-    if item["link"]:
-        title = f'<a href="{html.escape(item["link"], quote=True)}">{title}</a>'
+    display_title = clip_text(item.get("display_title", item["title"]), 300)
+    title = html.escape(display_title)
+    try:
+        link = normalize_url(item["link"]) if item.get("link") else ""
+    except URLPolicyError:
+        link = ""
+    if link:
+        title = f'<a href="{html.escape(link, quote=True)}">{title}</a>'
     tags = "".join(f"#{t.replace('·', '_').replace(' ', '_')} " for t in item.get(key, []) if t != hide_sector)
     mark = "🚨 " if hide_sector is not None and item["score"] >= 3 else ""
     lines = [f"🔹 {mark}{tags}<b>{title}</b>"]
-    summary = item["display_summary"] if "display_summary" in item else short_summary(item)
-    source = html.escape(item["source"])  # the title already links to the article
+    summary = clip_text(item["display_summary"] if "display_summary" in item else short_summary(item), 400)
+    source = html.escape(clip_text(item["source"], 120))  # the title already links to the article
     if ITEM_STYLE == "quote":
         # Keep the linked headline above the quote; summary and source remain unlinked inside it.
-        padded = html.escape(item.get("display_title", item["title"]))
-        if item["link"]:
+        padded = html.escape(display_title)
+        if link:
             padded += TITLE_LINK_SPACES
-            padded = f'<a href="{html.escape(item["link"], quote=True)}">{padded}</a>'
+            padded = f'<a href="{html.escape(link, quote=True)}">{padded}</a>'
         heading = f"{mark}{tags}<b>{padded}</b>"
         lines = []
         if summary:
@@ -640,7 +660,7 @@ def format_item(item, hide_sector=None, key="sectors"):
             lines.append("")
         meta = f"📰 {source}" + (f" · {when}" if when else "")
         if item.get("ai_model"):
-            meta += f" · {model_badge(item['ai_model'])}"
+            meta += " · " + html.escape(clip_text(model_badge(item['ai_model']), 80))
         elif item.get("keyword_only"):
             meta += " · 🔑 키워드"
         lines.append(meta)
@@ -653,7 +673,7 @@ def format_item(item, hide_sector=None, key="sectors"):
         meta += " · 🌐 영문 기사 (제목·요약 번역)"
     lines.append(meta)
     if item.get("ai_model"):
-        lines.append(f"🤖 {model_label(item['ai_model'])}")
+        lines.append("🤖 " + html.escape(clip_text(model_label(item['ai_model']), 80)))
     elif item.get("keyword_only"):
         lines.append("🔑 키워드 판단 (AI 응답 지연)")
     return "\n".join(lines)
@@ -665,7 +685,7 @@ MAX_ENTITIES = 90  # stay under Telegram's cap on formatting entities per messag
 
 def visible_len(text):
     """Telegram's 4096 limit counts the text after HTML parsing, so markup and URLs are free."""
-    return len(html.unescape(TAG.sub("", text)))
+    return len(html.unescape(TAG.sub("", text)).encode("utf-16-le", "replace")) // 2
 
 
 def entity_count(text):
@@ -682,6 +702,8 @@ def build_messages(items, now=None, title="🛡 <b>보안 뉴스</b>", limit=TEL
     With sector_order the sections are industries (urgent items marked 🚨), otherwise 긴급/주요."""
     now = now or datetime.now(timezone.utc)
     header = f"{title} · {now.astimezone(KST):%m/%d %H:%M} · {len(items)}건"
+    if visible_len(header) > limit:
+        raise ValueError("digest heading exceeds the message size limit")
     if sector_order is not None:
         names = [n for n in sector_order if n != OTHER_SECTOR] + [OTHER_SECTOR]
         groups = [(f"{(icons or SECTOR_ICONS).get(n, '🔸')} <b>{n}</b>", n, [it for it in items if primary_sector(it, key) == n])
@@ -695,6 +717,13 @@ def build_messages(items, now=None, title="🛡 <b>보안 뉴스</b>", limit=TEL
             block = format_item(item, name, key)
             if i == 0:
                 block = f"{heading} ({len(group)})\n\n{block}" if name else f"{heading}\n\n{block}"
+            if visible_len(block) > limit or entity_count(block) > MAX_ENTITIES:
+                # A malformed category or oversized single item cannot block every other item.
+                safe = dict(item, display_title=clip_text(item.get("display_title", item["title"]), 200),
+                            display_summary="", sectors=[], focus_sectors=[])
+                block = format_item(safe)
+                if visible_len(block) > limit:
+                    block = html.escape(clip_text(item.get("display_title", item["title"]), limit))
             blocks.append(block)
 
     messages, cur = [], header
@@ -1100,7 +1129,7 @@ Answer only with a JSON array, one object per item in the same order:
 
 def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instructions=None, lite_first=False,
                     deadline=None):
-    rows = [{"i": n, "title": it["title"], "summary": short_summary(it)} for n, it in enumerate(items)]
+    rows = [{"i": n, "title": clip_text(it["title"], 1000), "summary": short_summary(it)} for n, it in enumerate(items)]
     prompt = ((instructions or CLASSIFY_PROMPT) + "\nSECTORS: " + json.dumps(sectors + ["기타"], ensure_ascii=False)
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
@@ -1109,10 +1138,32 @@ def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instruct
                       deadline=deadline, flash_timeout=45)  # 15 items with translations
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
-    by_i = {r.get("i"): r for r in out if isinstance(r, dict)}
+    for row in out:
+        if (not isinstance(row, dict) or type(row.get("i")) is not int
+                or not 0 <= row["i"] < len(items) or not verdict_types_valid(row, complete=True)):
+            raise ValueError("classification fields have invalid types")
+        duplicate = row.get("dup_of")
+        if duplicate is not None and (type(duplicate) is not int or not 0 <= duplicate < row["i"]):
+            raise ValueError("classification duplicate reference is invalid")
+        for field, allowed in (("sector", sectors), ("focus_sector", focus_sectors)):
+            if field in row and row[field] not in allowed + [OTHER_SECTOR]:
+                raise ValueError("classification category is invalid")
+    by_i = {r["i"]: r for r in out}
     if set(by_i) != set(range(len(items))):
         raise ValueError("classification is missing items")
     return [by_i[n] for n in range(len(items))]
+
+
+def verdict_types_valid(row, complete=False):
+    booleans = ("relevant", "focus", "urgent", "already_sent")
+    if not isinstance(row, dict) or type(row.get("relevant")) is not bool:
+        return False
+    if any((complete or name in row) and type(row.get(name)) is not bool for name in booleans):
+        return False
+    if "duplicate" in row and type(row["duplicate"]) is not bool:
+        return False
+    return all(name not in row or isinstance(row[name], str) and len(row[name]) <= 10000
+               for name in ("sector", "focus_sector", "story", "title_ko", "summary_ko"))
 
 
 def cache_key(item):
@@ -1158,7 +1209,7 @@ class GeminiClassifier:
 
         for it in head:
             hit = self.cache.get(cache_key(it))
-            if isinstance(hit, list) and len(hit) == 2 and isinstance(hit[0], dict):
+            if isinstance(hit, list) and len(hit) == 2 and verdict_types_valid(hit[0]):
                 remember(it, dict(hit[0]), hit[1])
         head = [it for it in head if id(it) not in judged]
         deadline = time.monotonic() + self.deadline
@@ -1263,13 +1314,16 @@ def google_news_target(link, timeout=8):
     post = urllib.request.Request("https://news.google.com/_/DotsSplashUi/data/batchexecute", data=body.encode(),
                                   headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
                                            "User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(post, timeout=timeout) as resp:
+    with urlopen_public(post, timeout=timeout, max_bytes=1024 * 1024) as resp:
         text = resp.read().decode("utf-8", "replace")
     try:
         url = json.loads(json.loads(text.split("\n\n", 1)[1])[0][2])[1]
     except (IndexError, TypeError, ValueError):
         return ""
-    return url if isinstance(url, str) and url.startswith("http") and "news.google.com" not in url else ""
+    try:
+        return normalize_url(url) if isinstance(url, str) and "news.google.com" not in url else ""
+    except URLPolicyError:
+        return ""
 
 
 def page_summary(item, timeout=8):
@@ -1282,7 +1336,7 @@ def page_summary(item, timeout=8):
     if not link.startswith("http"):
         return ""
     req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko,en;q=0.8"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urlopen_public(req, timeout=timeout, max_bytes=400_000, truncate=True) as resp:
         raw = resp.read(400_000)
         charset = resp.headers.get_content_charset()
     if not charset:
@@ -1568,28 +1622,49 @@ def masked(chat_id):
     return f"{s[:2]}***{s[-2:]}" if len(s) > 4 else "***"
 
 
+class SubscriberStateError(RuntimeError):
+    """An existing membership file cannot be authenticated; never replace it with an empty list."""
+
+
 def load_subscribers(path, key=None):
-    empty = {"ids": [], "stopped": [], "last_update": 0, "pending": {}, "denied": [], "former": []}
+    empty = {"ids": [], "stopped": [], "last_update": 0, "pending": {}, "denied": [], "former": [],
+             "request_notified": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return empty
-    if "ct" in data:
-        if not key:
-            log("warning: subscriber file is encrypted and no bot token is set")
-            return empty
-        plain = _decrypt_subscribers(data, key)
-        if plain is None:
-            log("warning: subscriber file does not match this bot token; starting a new list")
-            return empty
-        data = json.loads(plain)
+    except (OSError, ValueError) as error:
+        raise SubscriberStateError("subscriber file could not be read; preserving existing state") from error
+    try:
+        if not isinstance(data, dict):
+            raise ValueError("invalid membership object")
+        if "ct" in data:
+            if not key:
+                raise ValueError("subscriber decryption key is missing")
+            plain = _decrypt_subscribers(data, key)
+            if plain is None:
+                raise ValueError("subscriber authentication failed")
+            data = json.loads(plain)
+        if not isinstance(data, dict) or any(not isinstance(data.get(f, []), list)
+                                           for f in ("ids", "stopped", "denied", "former")):
+            raise ValueError("invalid membership lists")
+        if any(not isinstance(cid, str) for field in ("ids", "stopped", "denied", "former")
+               for cid in data.get(field, [])):
+            raise ValueError("invalid membership identifiers")
+        if not isinstance(data.get("pending", {}), dict) or not isinstance(data.get("request_notified", {}), dict):
+            raise ValueError("invalid membership metadata")
+        if any(not isinstance(cid, str) or not isinstance(name, str) for cid, name in data.get("pending", {}).items()):
+            raise ValueError("invalid pending membership")
+    except (ValueError, TypeError, KeyError) as error:
+        raise SubscriberStateError("subscriber authentication or format validation failed; preserving existing state") from error
     ids, stopped = list(data.get("ids", [])), list(data.get("stopped", []))
     return {"ids": ids, "stopped": stopped, "last_update": data.get("last_update", 0),
             # Approval mode: requests waiting for the admin (id -> name, kept only in this encrypted
             # file), chats the admin turned down, and chats that were ever subscribers (they may
             # come back with /start without asking again).
             "pending": dict(data.get("pending", {})), "denied": list(data.get("denied", [])),
-            "former": list(dict.fromkeys(list(data.get("former", [])) + ids + stopped))}
+            "former": list(dict.fromkeys(list(data.get("former", [])) + ids + stopped)),
+            "request_notified": dict(data.get("request_notified", {}))}
 
 
 def save_subscribers(path, subs, key=None):
@@ -1627,7 +1702,7 @@ def backup_subscribers(path, backup, key=None):
     if not path.exists():
         return False
     current = load_subscribers(path, key)
-    if _readable_with(backup, key):
+    if backup.exists():
         old = load_subscribers(backup, key)
         same_format = (json.loads(backup.read_text(encoding="utf-8")).get("v")
                        == json.loads(path.read_text(encoding="utf-8")).get("v"))
@@ -1659,7 +1734,7 @@ def _chat_name(chat):
 
 
 def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, welcome=TEXTS["welcome"],
-                     why=None):
+                     why=None, now=None, notification_limit=10, request_cooldown=1800):
     """Subscribe chats that message the bot and unsubscribe ones that send /stop.
 
     Without an admin, /start (or the bot being added to a group) subscribes at once, even after an
@@ -1675,6 +1750,12 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
     ids, stopped = dict.fromkeys(subs["ids"]), dict.fromkeys(subs["stopped"])
     pending, denied, former = dict(subs["pending"]), dict.fromkeys(subs["denied"]), dict.fromkeys(subs["former"])
     last_seen = subs.get("last_update", 0)
+    now = time.time() if now is None else now
+    notified = {cid: stamp for cid, stamp in subs.get("request_notified", {}).items()
+                if isinstance(stamp, (int, float)) and now - 30 * 86400 <= stamp <= now}
+    notified = dict(sorted(notified.items(), key=lambda pair: pair[1])[-2000:])
+    notification_limit = max(1, min(30, int(notification_limit)))
+    request_cooldown = max(300, int(request_cooldown))
     added, removed, requests, rejected, presses, tests = [], [], [], [], [], []
     stats_asked, questions = False, []
     if updates:
@@ -1696,6 +1777,7 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
                         + " 버튼 정상 처리 (구독자 목록은 그대로)")
             elif cid in pending and verb in ("ok", "no"):
                 name = pending.pop(cid)
+                notified.pop(cid, None)  # an explicit admin decision permits a fresh application
                 if verb == "ok":
                     stopped.pop(cid, None)
                     denied.pop(cid, None)
@@ -1761,21 +1843,28 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
             added.append(cid)
         elif action == "start" and cid not in pending:
             # A rejected chat may ask again with /start; it always goes back to the admin.
-            pending[cid] = _chat_name(chat)
-            requests.append(cid)
+            if len(pending) < 1000:
+                pending[cid] = _chat_name(chat)
+                requests.append(cid)
     save_subscribers(path, {"ids": list(ids), "stopped": list(stopped), "last_update": last_seen,
-                            "pending": pending, "denied": list(denied), "former": list(former)}, key)
-    added = [c for c in added if c in ids]
-    removed = [c for c in removed if c not in ids]
-    requests = [c for c in requests if c in pending]
+                            "pending": pending, "denied": list(denied), "former": list(former),
+                            "request_notified": notified}, key)
+    added = list(dict.fromkeys(c for c in added if c in ids))
+    removed = list(dict.fromkeys(c for c in removed if c not in ids))
+    requests = list(dict.fromkeys(c for c in requests if c in pending))
+    queued = list(dict.fromkeys(requests + [cid for cid in pending if cid not in notified]))
+    queued = ([cid for cid in queued if cid not in notified or now - notified[cid] >= request_cooldown]
+              [:notification_limit] if admin else [])
     if requests:
         log(f"subscription requests waiting for the admin: {len(requests)}")
     if send:
         def say(cid, text, markup=None):
             try:
                 send(cid, text, markup) if markup else send(cid, text)
+                return True
             except TelegramError as e:
                 log(f"warning: message to {masked(cid)}: {e}")
+                return False
         for cid in added:
             say(cid, welcome)
         for cid in removed:
@@ -1795,12 +1884,18 @@ def sync_subscribers(path, updates, send=None, key=None, admin=None, api=None, w
                        + ("\n" + "\n".join(GEMINI_BUDGET.summary()) if GEMINI_BUDGET else ""))
         for q in questions:
             say(admin, why(q) if why else "이 기능을 쓸 수 없어요.")
-        for cid in requests:
+        for cid in queued:
             say(cid, REQUESTED)
-            say(admin, f"🔔 <b>새 구독 신청</b>\n이름: {html.escape(pending[cid])}\nID: <code>{cid}</code>"
+            delivered = say(admin, f"🔔 <b>새 구독 신청</b>\n이름: {html.escape(pending[cid])}\nID: <code>{cid}</code>"
                        f"\n\n{APPROVE_HINT}",
                 {"inline_keyboard": [[{"text": "✅ 승인", "callback_data": f"ok:{cid}"},
                                       {"text": "❌ 거절", "callback_data": f"no:{cid}"}]]})
+            if delivered:
+                notified[cid] = now
+        if queued:
+            stored = load_subscribers(path, key)
+            stored["request_notified"] = notified
+            save_subscribers(path, stored, key)
     stamp = datetime.now(KST).strftime("%H:%M")
     # Several taps on the same message (the result only shows minutes later) count once.
     once, unique = set(), []
@@ -1916,7 +2011,8 @@ def fill_article_dates(groups, config, fetcher):
             return None, False
         timeout = min(max(0.1, float(feed.get("article_date_timeout_seconds", 6))), remaining)
         try:
-            raw = fetcher(item["link"], timeout=timeout) if fetcher is fetch else fetcher(item["link"])
+            raw = (fetcher(item["link"], timeout=timeout, max_bytes=400_000, truncate=True)
+                   if fetcher is fetch else fetcher(item["link"]))
             return parse_article_date(raw, tz, feed.get("article_date_pattern")), True
         except Exception:
             return None, True
@@ -1955,7 +2051,8 @@ def fetch_feeds(config, fetcher):
 
     def read(feed):
         try:
-            raw = (fetcher(feed["url"], timeout=float(feed.get("timeout_seconds", 20)))
+            raw = (fetcher(feed["url"], timeout=float(feed.get("timeout_seconds", 20)),
+                           max_bytes=int(feed.get("max_bytes", 8 * 1024 * 1024)))
                    if fetcher is fetch else fetcher(feed["url"]))
             return raw, None
         except Exception as error:
@@ -2002,7 +2099,17 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
             parser = {"rss": parse_feed, "cisa_kev": parse_kev}.get(kind) or PARSERS[kind]
             date_tz = ZoneInfo(feed["date_timezone"]) if feed.get("date_timezone") else timezone.utc
             parsed = parser(raw, feed["name"], default_tz=date_tz) if kind == "rss" else parser(raw, feed["name"])
-            got = [it for it in parsed if not blocked_outlet(it, blocked)]
+            got = []
+            for item in parsed[:5000]:
+                if blocked_outlet(item, blocked):
+                    continue
+                if item.get("link"):
+                    try:
+                        item["link"] = normalize_url(item["link"])
+                    except URLPolicyError:
+                        continue
+                item["title"] = clip_text(item["title"], 2000)
+                got.append(item)
             if feed.get("fetch_article_dates"):
                 dates.append((got, feed, date_tz, n))
             for it in got:
@@ -2018,6 +2125,11 @@ def collect(config, fetcher=fetch, failed=None, counts=None):
             items.extend(got)
         except Exception as e:  # one broken feed must not stop the others
             log(f"warning: {feed_label(feed, n)} failed: {e}")
+            if isinstance(config.get("_collection_errors"), dict):
+                config["_collection_errors"][str(n)] = {
+                    "kind": type(e).__name__,
+                    "reason": str(e) if isinstance(e, URLPolicyError) else
+                              f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else type(e).__name__}
             if failed is not None:
                 failed.append(feed["name"])
     fill_article_dates(dates, config, fetcher)
@@ -2761,10 +2873,12 @@ def main(argv=None):
     # Anyone who presses /start is subscribed automatically; /stop or blocking the bot ends it.
     # Ids from feeds.json or the secret join the encrypted list, so they can later be removed
     # from the public repository.
-    configured = all_chat_ids(config, os.environ.get("TELEGRAM_CHAT_IDS") or file_values.get("TELEGRAM_CHAT_IDS", ""))
-    add_subscribers(subs_path, configured, key)
     # With an admin (the test chat) and require_approval on, new /start requests wait for the admin.
     approver = os.environ.get("SECNEWS_ADMIN_CHAT", "").strip() if config.get("require_approval", True) else ""
+    if config.get("require_approval", True) and not re.fullmatch(r"[1-9][0-9]{0,19}", approver):
+        raise RuntimeError("approval is required but a valid administrator ID is not configured")
+    configured = all_chat_ids(config, os.environ.get("TELEGRAM_CHAT_IDS") or file_values.get("TELEGRAM_CHAT_IDS", ""))
+    add_subscribers(subs_path, configured, key)
     try:
         added, removed = sync_subscribers(subs_path, fetch_updates(token, load_subscribers(subs_path, key)
                                                                    .get("last_update", 0)),

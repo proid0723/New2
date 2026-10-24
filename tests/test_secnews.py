@@ -193,7 +193,7 @@ class ParseTests(unittest.TestCase):
     def test_production_fetches_receive_feed_and_article_timeout_limits(self):
         import io
         calls = []
-        def urlopen(req, timeout):
+        def urlopen(req, timeout, **kwargs):
             calls.append((req.full_url, timeout))
             raw = (b'<rss><channel><item><title>A</title><link>https://example.com/a</link></item></channel></rss>'
                    if req.full_url.endswith('/rss') else
@@ -201,7 +201,7 @@ class ParseTests(unittest.TestCase):
             return io.BytesIO(raw)
         cfg = {"feeds": [{"name": "Wire", "url": "https://example.com/rss", "fetch_article_dates": True,
                           "timeout_seconds": 5, "article_date_timeout_seconds": 4}]}
-        with mock.patch.object(secnews.urllib.request, "urlopen", side_effect=urlopen):
+        with mock.patch.object(secnews, "urlopen_public", side_effect=urlopen):
             secnews.collect(cfg)
         self.assertEqual(calls, [("https://example.com/rss", 5), ("https://example.com/a", 4)])
 
@@ -1309,29 +1309,29 @@ class LocalizeTests(unittest.TestCase):
                 'the agency said."></head></html>').encode("euc-kr")
         asked = []
 
-        def fake(req, timeout=0):
+        def fake(req, timeout=0, **kwargs):
             asked.append(req.full_url)
             return Resp(page)
         items = [{"title": "Hospital network attacks pass 3,000", "summary": "Hospital network attacks pass 3,000 Example",
                   "link": "https://example.com/a"},
                  {"title": "Generic headline here", "summary": "", "link": "https://news.google.com/rss/articles/x"},
                  {"title": "Has a summary", "summary": "A long enough summary from the feed itself.", "link": "https://e/b"}]
-        saved = secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES
-        secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES = fake, True
+        saved = secnews.urlopen_public, secnews.PAGE_SUMMARIES
+        secnews.urlopen_public, secnews.PAGE_SUMMARIES = fake, True
         try:
             secnews.fill_summaries(items)
         finally:
-            secnews.urllib.request.urlopen, secnews.PAGE_SUMMARIES = saved
+            secnews.urlopen_public, secnews.PAGE_SUMMARIES = saved
         # Items with a summary are left alone; the Google News page here carries no signature.
         self.assertEqual(sorted(asked), ["https://example.com/a", "https://news.google.com/rss/articles/x"])
         self.assertEqual(secnews.short_summary(items[0]), "Hospital network attack attempts passed 3,000 this year, the agency said.")
         self.assertEqual(secnews.short_summary(items[1]), "")
         page = b'<meta property="og:description" content="Example Daily, the trusted news site for everyone">'
-        secnews.urllib.request.urlopen = fake
+        secnews.urlopen_public = fake
         try:
             self.assertEqual(secnews.page_summary({"title": "Hospital network attacks", "link": "https://e/c"}), "")
         finally:
-            secnews.urllib.request.urlopen = saved[0]
+            secnews.urlopen_public = saved[0]
 
     def test_page_summary_handles_korean_spacing_without_accepting_generic_descriptions(self):
         import io
@@ -1346,7 +1346,7 @@ class LocalizeTests(unittest.TestCase):
             with self.subTest(title=title, description=description):
                 response = io.BytesIO(('<meta property="og:description" content="' + description + '">').encode())
                 response.headers = Message()
-                with mock.patch.object(secnews.urllib.request, "urlopen", return_value=response):
+                with mock.patch.object(secnews, "urlopen_public", return_value=response):
                     result = secnews.page_summary({"title": title, "link": "https://example.com/article"})
                 self.assertEqual(result, description if accepted else "")
 
@@ -1367,7 +1367,7 @@ class LocalizeTests(unittest.TestCase):
         import io
         sent = []
 
-        def fake(req, timeout=0):
+        def fake(req, timeout=0, **kwargs):
             url = req if isinstance(req, str) else req.full_url
             sent.append(url)
             if url.endswith("/rss/articles/CBMiAbc"):
@@ -1377,13 +1377,13 @@ class LocalizeTests(unittest.TestCase):
             inner = json.dumps(["garturlres", "https://example.com/news/1", 1])
             return io.BytesIO((")]}'\n\n" + json.dumps([["wrb.fr", "Fbv4je", inner, None, None, None, "generic"]])).encode())
         import urllib.parse
-        saved = secnews.urllib.request.urlopen
-        secnews.urllib.request.urlopen = fake
+        saved = secnews.urlopen_public
+        secnews.urlopen_public = fake
         try:
             self.assertEqual(secnews.google_news_target("https://news.google.com/rss/articles/CBMiAbc?oc=5"),
                              "https://example.com/news/1")
         finally:
-            secnews.urllib.request.urlopen = saved
+            secnews.urlopen_public = saved
 
     def test_article_shows_which_ai_judged_it(self):
         self.assertEqual(secnews.model_label("gemini-3.8-flash"), "Gemini 3.8 Flash")
@@ -1507,10 +1507,12 @@ class SubscriberTests(unittest.TestCase):
         self.assertTrue(secnews.backup_subscribers(self.path, backup, self.key))  # backup converted too
         self.assertEqual(json.loads(backup.read_text())["v"], 2)
         other = secnews.subscriber_key("999:other")
-        self.assertEqual(secnews.load_subscribers(self.path, other)["ids"], [])  # wrong token opens nothing
+        with self.assertRaises(secnews.SubscriberStateError):
+            secnews.load_subscribers(self.path, other)
         data["ct"] = base64.b64encode(b"x" + base64.b64decode(data["ct"])[1:]).decode()
         self.path.write_text(json.dumps(data))
-        self.assertEqual(self.ids(), [])  # a changed byte fails the GCM tag
+        with self.assertRaises(secnews.SubscriberStateError):
+            self.ids()  # a changed byte fails closed instead of resetting membership
 
     def test_backup_follows_membership_changes_only(self):
         backup = Path(self.dir.name) / "backup" / "subscribers.json"
@@ -1532,7 +1534,10 @@ class SubscriberTests(unittest.TestCase):
         self.assertEqual(secnews.load_subscribers(backup, self.key)["ids"], ["11"])
         other = secnews.subscriber_key("999:new-token")  # a new bot token cannot read the old backup
         secnews.save_subscribers(self.path, {"ids": ["44"], "stopped": []}, other)
-        self.assertTrue(secnews.backup_subscribers(self.path, backup, other))
+        before = backup.read_bytes()
+        with self.assertRaises(secnews.SubscriberStateError):
+            secnews.backup_subscribers(self.path, backup, other)
+        self.assertEqual(backup.read_bytes(), before)
 
     def test_admin_asks_for_subscriber_count(self):
         secnews.add_subscribers(self.path, ["11", "22"], self.key)
@@ -1636,7 +1641,8 @@ class SubscriberTests(unittest.TestCase):
         self.sync([upd(1, 1234567890, "/start")])
         raw = self.path.read_text()
         self.assertNotIn("1234567890", raw)
-        self.assertEqual(secnews.load_subscribers(self.path, secnews.subscriber_key("other:token"))["ids"], [])
+        with self.assertRaises(secnews.SubscriberStateError):
+            secnews.load_subscribers(self.path, secnews.subscriber_key("other:token"))
 
     def test_configured_ids_fold_in_but_stopped_stay_out(self):
         self.sync([upd(1, 11, "/start"), upd(2, 11, "/stop")])
@@ -1941,7 +1947,7 @@ class GeminiRetryTests(unittest.TestCase):
                 flash, lite = "gemini-3-flash-preview", "gemini-flash-lite-latest"
                 budget = secnews.GeminiBudget(Path(folder) / "usage.json", [(flash, 18), (lite, 450)])
                 clock, calls = [0.0], []
-                verdict = [{"i": 0, "relevant": True}]
+                verdict = [{"i": 0, "relevant": True, "focus": False, "urgent": False, "already_sent": False}]
                 def request(req, timeout):
                     model = req.full_url.split("/models/")[1].split(":")[0]
                     calls.append((model, timeout, json.loads(req.data)))
@@ -1967,7 +1973,7 @@ class GeminiRetryTests(unittest.TestCase):
         calls = []
         def request(req, timeout):
             calls.append(timeout)
-            answer = '[{"i": 0, "relevant": true}]' if len(calls) == 1 else '["translated"]'
+            answer = '[{"i": 0, "relevant": true, "focus": false, "urgent": false, "already_sent": false}]' if len(calls) == 1 else '["translated"]'
             return io.BytesIO(json.dumps({"candidates": [{"content": {"parts": [{"text": answer}]}}]}).encode())
         with mock.patch.object(secnews, "GEMINI_BUDGET", None), \
              mock.patch.object(secnews.urllib.request, "urlopen", side_effect=request):
