@@ -54,6 +54,13 @@ def main():
             else:
                 entry["description_tags"] = [tag for tag in secnews.META_DESC.findall(text)
                                               if "description" in tag.lower()][:10]
+                entry["identity_tags"] = [tag for tag in secnews.META_DESC.findall(text)
+                                           if re.search(r'og:(?:title|type|url)', tag, re.I)][:10]
+                article = secnews.ArticleContent()
+                article.feed(text)
+                entry["article_count"] = article.count
+                entry["article_headlines"] = article.headlines[:10]
+                entry["article_excerpt"] = " ".join(article.parts)[:10000]
             row["requests"].append(entry)
             result = io.BytesIO(data)
             result.headers = headers

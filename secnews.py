@@ -1312,6 +1312,55 @@ PAGE_SUMMARIES = False  # fetch missing summaries from the article pages (set in
 META_DESC = re.compile(r"<meta\b[^>]*>", re.I)
 
 
+class ArticleContent(HTMLParser):
+    """Visible semantic article text only; exclude navigation, scripts and footer boilerplate."""
+    SKIP = {"script", "style", "noscript", "template", "nav", "aside", "footer"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = self.hidden = self.heading = self.count = 0
+        self.parts, self.headlines = [], []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.hidden += 1
+        if tag == "article":
+            self.depth += 1
+            self.count += 1
+        if tag == "h1" and self.depth:
+            self.heading += 1
+
+    def handle_endtag(self, tag):
+        if tag == "h1":
+            self.heading = max(0, self.heading - 1)
+        if tag == "article":
+            self.depth = max(0, self.depth - 1)
+        if tag in self.SKIP:
+            self.hidden = max(0, self.hidden - 1)
+
+    def handle_data(self, data):
+        if self.depth and not self.hidden:
+            self.parts.append(data)
+            if self.heading:
+                self.headlines.append(data)
+
+
+def article_description_matches(title, description, found, article):
+    """An article's verified introduction need not repeat the feed headline's words."""
+    compact = lambda text: re.sub(r"\W+", "", clean_text(text)).casefold()
+    title_text = compact(title)
+    headlines = [found.get("og:title", ""), " ".join(article.headlines)]
+    phrases = {run[i:i + 4] for run in re.findall(r"[가-힣]{4,}", re.sub(r"\s+", "", title))
+               for i in range(len(run) - 3)}
+    words = {w.casefold() for w in re.findall(r"[a-zA-Z]{4,}", title)
+             if w.casefold() not in {"this", "that", "with", "from", "news", "says", "have", "after", "about"}}
+    related = any(compact(h) and (compact(h) == title_text
+                  or any(p in compact(h) for p in phrases)
+                  or len(words & set(re.findall(r"[a-z]{4,}", h.casefold()))) >= 2)
+                  for h in headlines)
+    return bool(related and len(description) >= 30 and compact(description) in compact(" ".join(article.parts)))
+
+
 def google_news_target(link, timeout=8):
     """The article behind a Google News RSS link (news.google.com/rss/articles/<id>), or "".
     Google's page holds a signature for the id; Google's own page script trades the two for the
@@ -1379,6 +1428,12 @@ def page_summary(item, timeout=8):
         compact_text = re.sub(r"\s+", "", text)
         if len(text) >= 30 and (any(w[:3] in text for w in words)
                                 or any(phrase in compact_text for phrase in phrases)):
+            return text
+    article = ArticleContent()
+    article.feed(page)
+    for key in ("og:description", "twitter:description", "description"):
+        text = clean_text(found.get(key, ""))
+        if article_description_matches(item["title"], text, found, article):
             return text
     return ""
 
