@@ -206,7 +206,7 @@ jobs:
           [ -n "$CHAT" ] && [ -n "$TELEGRAM_BOT_TOKEN" ] || exit 0
           [ "$(date -u +%-M)" -lt 5 ] || exit 0
           curl -s -o /dev/null --data-urlencode "chat_id=$CHAT" \
-            --data-urlencode "text=⚠️ 보안 속보 봇 실행이 실패했어요. 로그: $RUN_URL" \
+            --data-urlencode "text=⚠️ 보안 뉴스 봇 실행이 실패했어요. 로그: $RUN_URL" \
             "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" || true
       # Needs CONFIG_REPO_TOKEN with Contents: Read and write on New2_config. Commits only when
       # someone joins or leaves; a read-only token just leaves a warning.

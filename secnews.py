@@ -2564,7 +2564,7 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     failures.update({n: 1 for n in failed if n not in failures})
     broken = [n for n, c in failures.items() if c == FEED_ALERT_AFTER]
     if broken and alert:
-        alert("⚠️ 보안 속보 봇: 다음 출처가 " + f"{FEED_ALERT_AFTER}번 연속 실패했어요 (주소 변경 가능성)\n"
+        alert("⚠️ 보안 뉴스 봇: 다음 출처가 " + f"{FEED_ALERT_AFTER}번 연속 실패했어요 (주소 변경 가능성)\n"
               + "\n".join(f"· {html.escape(n)}" for n in broken))
 
     # Weekly numbers for the admin's Monday report.
