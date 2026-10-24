@@ -8,3 +8,5 @@ feeds.json
 .env.*
 .diagnostics-work/
 .diagnostics-cache/
+.evaluation-state/
+.evaluation-usage/

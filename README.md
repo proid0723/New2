@@ -146,3 +146,17 @@ python3 secnews.py --dry-run               # 보내지 않고 메시지만 출�
 - AI 판단도 100%는 아니고, 요약이 없는 기사는 제목만으로 판단합니다.
 - 일부 정보(해커 조직의 주장 등)는 사실 확인 전 정보일 수 있습니다.
 - 레포를 비공개로 바꾸면 Actions 무료 시간(월 2,000분)을 넘어 유료가 됩니다.
+# Checking selection changes
+
+The **Selection quality evaluation** workflow compares a frozen private baseline with current
+settings on identical labelled examples, including their saved context. It records false positives,
+false negatives, precision/recall and changed examples in the private repository. Unreviewed cases
+are excluded, and provider failures or differing model versions cannot count as quality gains.
+This evaluates classification after keyword admission, rather than end-to-end collection accuracy.
+
+The workflow runs manually and on Mondays at 00:35 UTC. A live comparison normally uses two Lite
+requests and is capped at four attempts, recorded in the existing API usage ledger; it never sends
+messages or saves production news state. Budget exhaustion skips the evaluation. Disable `live`
+to validate files without API calls. Private `evaluation/README.md` describes review and baseline
+promotion; results never automatically change settings. Locally, run
+`python3 tools/evaluate_selection.py /path/to/private-config` for offline validation.

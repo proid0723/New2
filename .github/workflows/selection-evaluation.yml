@@ -1,0 +1,101 @@
+name: Selection quality evaluation
+on:
+  workflow_dispatch:
+    inputs:
+      live:
+        description: 'Compare both settings with at most four recorded Lite attempts; no messages'
+        type: boolean
+        default: true
+  schedule:
+    - cron: '35 0 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: selection-quality-evaluation
+  cancel-in-progress: false
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      SECNEWS_STATE: ${{ github.workspace }}/.evaluation-state/seen.json
+      SECNEWS_TEST_USAGE_EVENT: ${{ github.workspace }}/.evaluation-usage/selection-${{ github.run_id }}-${{ github.run_attempt }}.json
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ github.repository_owner }}/New2_config
+          token: ${{ secrets.CONFIG_REPO_TOKEN }}
+          path: .private-config
+          persist-credentials: false
+      - name: Install pinned dependency
+        run: python3 -m pip install -q --disable-pip-version-check --break-system-packages --require-hashes -r requirements.txt
+      - name: Read encrypted budget snapshot
+        if: github.event_name == 'schedule' || inputs.live
+        id: state
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .state-cache
+          key: secnews-encrypted-state-v1-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: secnews-encrypted-state-v1-
+      - name: Open disposable snapshot
+        if: steps.state.outputs.cache-matched-key != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python3 tools/state_cache.py open --state .evaluation-state
+      - name: Compare fixed examples without sending news
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          LIVE: ${{ github.event_name == 'schedule' || inputs.live }}
+        run: |
+          if [ "$LIVE" = 'true' ]; then
+            python3 tools/evaluate_selection.py .private-config --live
+          else
+            python3 tools/evaluate_selection.py .private-config
+          fi
+      - name: Upload encrypted failure diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: evaluation-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .diagnostics-cache/*.enc
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Save private results and API increments
+        if: always()
+        env:
+          TOKEN: ${{ secrets.CONFIG_REPO_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          event = Path(os.environ['SECNEWS_TEST_USAGE_EVENT'])
+          if event.is_file():
+              data = json.loads(event.read_text())
+              day = data['day']
+              from datetime import datetime
+              assert datetime.strptime(day, '%Y-%m-%d').strftime('%Y-%m-%d') == day
+              target = Path('.private-config/api-usage') / day / event.name
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(event.read_bytes())
+          PY
+          basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
+          cd .private-config
+          mkdir -p reports api-usage
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add reports api-usage
+          git diff --cached --quiet && exit 0
+          git commit -m 'Record fixed-example evaluation and API attempts'
+          for attempt in 1 2; do
+            git -c http.extraheader="$auth" pull --rebase origin main && \
+              git -c http.extraheader="$auth" push origin HEAD:main && exit 0
+          done
+          exit 1
