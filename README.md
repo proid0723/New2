@@ -154,7 +154,8 @@ false negatives, precision/recall and changed examples in the private repository
 are excluded, and provider failures or differing model versions cannot count as quality gains.
 This evaluates classification after keyword admission, rather than end-to-end collection accuracy.
 
-The workflow runs manually and on Mondays at 00:35 UTC. A live comparison normally uses two Lite
+The workflow flags regressions or tradeoffs with a failed check while preserving its private report.
+It runs manually and on Mondays at 00:35 UTC. A live comparison normally uses two Lite
 requests and is capped at four attempts, recorded in the existing API usage ledger; it never sends
 messages or saves production news state. Budget exhaustion skips the evaluation. Disable `live`
 to validate files without API calls. Private `evaluation/README.md` describes review and baseline

@@ -128,7 +128,11 @@ def predict(config, cases, context, key, model):
     for row, item in zip(cases, items):
         verdict, version = classifier.results[secnews.cache_key(item)]
         predictions[row["id"]] = {"keep": id(item) in kept, "focus": verdict["focus"],
-                                    "urgent": verdict["urgent"]}
+                                    "urgent": verdict["urgent"],
+                                    "decision_reason": item.get("drop_reason", "kept"),
+                                    "model_relevant": verdict["relevant"],
+                                    "already_sent": verdict["already_sent"],
+                                    "dup_of": verdict.get("dup_of")}
         versions.add(version)
     if len(versions) != 1:
         raise RuntimeError("mixed model versions are not comparable")
@@ -214,6 +218,9 @@ def main(argv=None):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{identity}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"selection evaluation: {report['labelled']} labelled, {report['pending']} pending, {report['api_attempts']} attempts")
+    if report.get("comparison", {}).get("status") in ("regressed", "tradeoff"):
+        print("selection evaluation: quality regression detected; inspect the private report")
+        return 1
     return 0 if report["status"] in ("validated", "complete", "skipped_budget", "skipped_state") else 1
 
 

@@ -167,6 +167,18 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual((state / "gemini_usage.json").read_bytes(), original)
             send.assert_not_called()
 
+    def test_regression_or_tradeoff_flags_the_workflow_after_preserving_the_report(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}):
+            root = Path(folder)
+            for status, exit_code in (("regressed", 1), ("tradeoff", 1), ("unchanged", 0), ("improved", 0)):
+                report = {"status": "complete", "comparison": {"status": status},
+                          "labelled": 1, "pending": 0, "api_attempts": 2}
+                with self.subTest(status=status), mock.patch.object(evaluation, "evaluate", return_value=report), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(evaluation.main([str(root)]), exit_code)
+                saved = json.loads((root / "reports/selection-evaluation/123-1.json").read_text())
+                self.assertEqual(saved["comparison"]["status"], status)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,6 +91,8 @@ def public_line(text, stream="stderr"):
         return f"telegram chats: {match[1]}"
     if text == "night notice sent":
         return text
+    if text == "selection evaluation: quality regression detected; inspect the private report":
+        return text
     if text in ("Private summary diagnostic saved; no AI or Telegram calls were made.",
                 "Administrator layout preview sent; no subscriber or news state was accessed."):
         return "diagnostic operation completed"
