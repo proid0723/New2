@@ -1205,6 +1205,7 @@ class GeminiClassifier:
         """Return the items to keep, best keyword score first in, same order out."""
         judged, dropped, dups, failed, models = {}, 0, 0, False, []
         self.failed = False
+        self.results = {}  # provenance belongs to this call, including cache hits remembered below
         # The best-ranked 90 are judged, 15 per request: an hourly digest needs one or two requests,
         # the 06:00 round-up more, smaller ones (one big request of 60 failed with 503 or timed out
         # far more often). The rest are dropped unless Gemini failed: unjudged low-ranked items
@@ -2436,6 +2437,8 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
         news.remove(it)
     news.sort(key=lambda it: (-it["score"], -(it["date"] or now).timestamp()))
     passed = len(news)
+    judgement_models = {}
+    classification_requested = bool(classify and news)
     held = []  # items Gemini could not judge in a digest that goes out anyway: kept for the next one
     if classify and news:
         pre = (state or {}).get("prejudged") or {}
@@ -2443,6 +2446,15 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
             classify.cache = pre.get("items") or {}
         # Gemini also spots stories sent in an earlier digest, across languages.
         kept = classify(news, [told_line(r) for r in recent])
+        results = getattr(classify, "results", {})
+        for it in news:
+            hit = results.get(cache_key(it))
+            if (isinstance(hit, list) and len(hit) == 2 and verdict_types_valid(hit[0])
+                    and isinstance(hit[1], str) and hit[1].strip()):
+                cached = (getattr(classify, "cache", {}) or {}).get(cache_key(it))
+                reused = (pre.get("for") == (prejudge or hour) and isinstance(cached, list)
+                          and len(cached) == 2 and verdict_types_valid(cached[0]) and cached[1] == hit[1])
+                judgement_models[hit[1]] = judgement_models.get(hit[1], False) or reused
         # Gemini unavailable (overloaded, timing out): nothing goes out on keyword judgement alone.
         # The digest tries once more five minutes later; if that fails too, this hour is skipped
         # and its news, still unsent, goes out with the next hour's digest. The admin hears why.
@@ -2544,9 +2556,19 @@ def run(config, state_path, sender, now=None, fetcher=fetch, bootstrap_send=Fals
     notice = config.get("no_news_notice", "off")
     if not sent and digests and notice != "off":
         text = wording(config, "no_news").replace("{time}", f"{now.astimezone(KST):%H:%M}")
+        if judgement_models:
+            detail = "🤖 판단: " + " · ".join(html.escape(clip_text(model_label(m), 80)) for m in judgement_models)
+            if any(judgement_models.values()):
+                detail += " (사전 판단 재사용 포함)"
+        elif classification_requested:
+            detail = "🤖 판단 모델 정보 없음"
+        else:
+            reason = "새 기사 없음" if not fresh else "기본 필터에서 제외" if not passed else "AI 분류 미사용"
+            detail = "🤖 AI 판단 없음 · " + reason
+        text += "\n\n" + detail
         if notice == "admin":
             if alert:
-                alert(f"📭 {now.astimezone(KST):%H}시 정기 발송: 새 기사 {len(fresh)}건 중 보낼 기사 없음")
+                alert(f"📭 {now.astimezone(KST):%H}시 정기 발송: 새 기사 {len(fresh)}건 중 보낼 기사 없음\n\n{detail}")
         elif not sender(text, silent=True):
             log("warning: the no-news notice was not delivered")
 
