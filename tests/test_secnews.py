@@ -181,7 +181,7 @@ class ParseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "dates.json"
             cfg = {"feeds": [{"name": u, "url": u, "fetch_article_dates": True} for u in ("feed1", "feed2")],
-                   "article_date_budget_seconds": 3, "_article_date_cache_path": path}
+                   "article_date_budget_seconds": 3, "_article_date_cache_path": path, "feed_workers": 1}
             with mock.patch.object(secnews.time, "monotonic", side_effect=lambda: clock[0]), \
                  mock.patch.object(secnews.concurrent.futures, "ThreadPoolExecutor") as executor:
                 executor.return_value.__enter__.return_value.map.side_effect = lambda fn, jobs: map(fn, jobs)
@@ -775,7 +775,7 @@ class RunTests(unittest.TestCase):
                          ("버거킹재팬 회원 정보 유출", d))
         seen_told = []
 
-        def fake(items, key, model, sectors, fsectors, told=(), instructions=None, lite_first=False):
+        def fake(items, key, model, sectors, fsectors, told=(), instructions=None, lite_first=False, deadline=None):
             seen_told.append(list(told))
             out = []
             for n, it in enumerate(items):
@@ -1872,7 +1872,131 @@ class TestUsageMergeTests(unittest.TestCase):
             self.assertEqual(json.loads(event.read_text())["requests"], {"model-a": 2})
 
 
+class FeedConcurrencyTests(unittest.TestCase):
+    def test_overlapping_feeds_preserve_order_flags_counts_and_failures(self):
+        import threading
+        overlap = threading.Barrier(2)
+        cfg = {"feeds": [{"name": "First", "url": "https://one.example/rss", "security_only": True},
+                         {"name": "Second", "url": "https://two.example/rss", "instant": "all"},
+                         {"name": "Unavailable", "url": "https://three.example/rss"}]}
+        def fetcher(url):
+            if "three.example" in url:
+                raise TimeoutError("slow")
+            overlap.wait(timeout=3)  # a sequential implementation cannot pass this
+            return RSS
+        failed, counts = [], {}
+        items = secnews.collect(cfg, fetcher, failed, counts)
+        self.assertEqual([it["source"] for it in items], ["First"] * 3 + ["Second"] * 3)
+        self.assertTrue(all(it["security_only"] for it in items[:3]))
+        self.assertTrue(all(it["instant_all"] for it in items[3:]))
+        self.assertEqual(failed, ["Unavailable"])
+        self.assertEqual(counts, {"0": 3, "1": 3})
+
+    def test_host_limit_does_not_block_other_publishers_behind_one_host(self):
+        import threading
+        # The first two requests from each host must overlap: per-host limits cannot consume
+        # all worker slots waiting for one publisher and starve the other publishers.
+        overlap, lock = threading.Barrier(6), threading.Lock()
+        active, peaks, total = {}, {}, [0, 0]
+        feeds = [{"name": "Wire", "url": f"https://{host}.example/{i}"}
+                 for host in ("one", "two", "three") for i in range(4)]
+        def fetcher(url):
+            host = urllib.parse.urlsplit(url).hostname
+            with lock:
+                active[host] = active.get(host, 0) + 1
+                peaks[host] = max(peaks.get(host, 0), active[host])
+                total[0] += 1
+                total[1] = max(total)
+            try:
+                overlap.wait(timeout=3)
+                return RSS
+            finally:
+                with lock:
+                    active[host] -= 1
+                    total[0] -= 1
+        results = secnews.fetch_feeds({"feeds": feeds}, fetcher)
+        self.assertTrue(all(error is None for _, error in results))
+        self.assertEqual(list(peaks.values()), [2, 2, 2])
+        self.assertEqual(total[1], 6)
+
+    def test_serial_override_empty_and_parse_failure_keep_other_results(self):
+        calls = []
+        cfg = {"feed_workers": 1, "feeds": [{"name": str(i), "url": str(i)} for i in range(3)]}
+        def fetcher(url):
+            calls.append(url)
+            return b"<html>maintenance</html>" if url == "1" else RSS
+        failed = []
+        items = secnews.collect(cfg, fetcher, failed)
+        self.assertEqual(calls, ["0", "1", "2"])
+        self.assertEqual(failed, ["1"])
+        self.assertEqual(len(items), 6)
+        self.assertEqual(secnews.collect({"feeds": []}, fetcher), [])
+
+
 class GeminiRetryTests(unittest.TestCase):
+    def test_all_resting_models_make_no_request_until_rest_expires(self):
+        with tempfile.TemporaryDirectory() as folder:
+            budget = secnews.GeminiBudget(Path(folder) / "usage.json", [("a", 5), ("b", 5)])
+            budget.rest("a", 15)
+            budget.rest("b", 15)
+            again = secnews.GeminiBudget(budget.path, budget.models)
+            with mock.patch.object(secnews, "GEMINI_BUDGET", again), \
+                 mock.patch.object(secnews.urllib.request, "urlopen") as request:
+                with self.assertRaisesRegex(RuntimeError, "temporary rest"):
+                    secnews.gemini_json("p", "k")
+            request.assert_not_called()
+            self.assertEqual(again.used, {})
+            with mock.patch.object(secnews.time, "time", return_value=max(again.resting.values()) + 1):
+                self.assertEqual(again.take(), "a")
+
+    def test_last_model_also_rests_after_timeout_or_transient_limit(self):
+        import io
+        import urllib.error
+        errors = [TimeoutError("slow"), urllib.error.HTTPError("https://example.com", 503, "busy", {}, None),
+                  urllib.error.HTTPError("https://example.com", 429, "busy", {}, io.BytesIO(b"PerMinute"))]
+        for error in errors:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as folder:
+                budget = secnews.GeminiBudget(Path(folder) / "usage.json", [("a", 5)])
+                with mock.patch.object(secnews, "GEMINI_BUDGET", budget), \
+                     mock.patch.object(secnews.urllib.request, "urlopen", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        secnews.gemini_json("p", "k")
+                self.assertIn("a", budget.resting)
+                self.assertEqual(budget.used, {"a": 1})
+
+    def test_deadline_covers_model_switches_and_does_not_charge_an_unstarted_request(self):
+        clock, asked = [0.0], []
+        with tempfile.TemporaryDirectory() as folder:
+            budget = secnews.GeminiBudget(Path(folder) / "usage.json", [("a", 5), ("b", 5), ("c", 5)])
+            def request(req, timeout):
+                asked.append(timeout)
+                clock[0] += timeout
+                raise TimeoutError("slow")
+            with mock.patch.object(secnews, "GEMINI_BUDGET", budget), \
+                 mock.patch.object(secnews.time, "monotonic", side_effect=lambda: clock[0]), \
+                 mock.patch.object(secnews.urllib.request, "urlopen", side_effect=request):
+                with self.assertRaisesRegex(TimeoutError, "time budget"):
+                    secnews.gemini_json("p", "k", timeout=90, deadline=100)
+            self.assertEqual(asked, [90, 10])
+            self.assertEqual(budget.used, {"a": 1, "b": 1})
+            self.assertNotIn("c", budget.history[budget.day])
+
+    def test_classifier_passes_one_deadline_through_all_chunks(self):
+        items = [dict(title=f"Airline booking {i}", summary="", score=2) for i in range(3)]
+        clock, deadlines = [10.0], []
+        def judge(part, *args):
+            deadlines.append(args[-1])
+            clock[0] += 5
+            return [dict(relevant=True) for _ in part]
+        classifier = secnews.GeminiClassifier("k", {}, chunk=1)
+        classifier.deadline = 8
+        with mock.patch.object(secnews.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(secnews, "gemini_classify", side_effect=judge):
+            classifier(items)
+        self.assertEqual(deadlines, [18, 18])
+        self.assertTrue(classifier.failed)
+        self.assertTrue(items[-1]["keyword_only"])
+
     def test_extra_text_after_the_json_answer_is_ignored(self):
         import io
         d = tempfile.TemporaryDirectory()

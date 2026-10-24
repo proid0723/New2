@@ -873,10 +873,9 @@ class GeminiBudget:
         translations (lite_first) go to the Lite models first."""
         order = sorted(self.models, key=lambda m: "lite" not in m[0]) if lite_first else self.models
         now = time.time()
-        # Resting models come last rather than never: if every model is resting, they still get asked.
-        order = sorted(order, key=lambda m: self.resting.get(m[0], 0) > now)
         for model, cap in order:
-            if model not in skip and self.used.get(model, 0) < cap:
+            if (model not in skip and self.used.get(model, 0) < cap
+                    and self.resting.get(model, 0) <= now):
                 self.used[model] = self.used.get(model, 0) + 1
                 today = self.history[self.day]
                 today[model] = today.get(model, 0) + 1
@@ -886,6 +885,8 @@ class GeminiBudget:
                     tests[model] = tests.get(model, 0) + 1
                 self._save()
                 return model
+        if any(self.used.get(model, 0) < cap for model, cap in self.models):
+            raise RuntimeError("no Gemini model is available outside its temporary rest period")
         raise RuntimeError("today's Gemini budget is used up for every model")
 
     def exhaust(self, model):
@@ -926,7 +927,8 @@ DEFAULT_GEMINI_MODELS = [{"model": "gemini-flash-latest", "daily": 18},  # 3.8 F
                          {"model": "gemini-3.1-flash-lite", "daily": 450}]
 
 
-def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False, think=False):
+def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first=False, think=False,
+                deadline=None):
     """One Gemini request that answers in JSON. Raises on any failure. think: a Lite model thinks
     first (LITE_THINKING), for judging news; Flash models think on their own."""
 
@@ -951,6 +953,9 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             busy.update(m for m, _ in GEMINI_BUDGET.models if "lite" not in m)
 
     while True:
+        remaining = deadline - time.monotonic() if deadline is not None else timeout
+        if remaining <= 0:
+            raise TimeoutError("Gemini classification time budget reached")
         if GEMINI_BUDGET is not None:
             model = GEMINI_BUDGET.take(skip=busy, lite_first=lite_first)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -958,7 +963,7 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
         req = urllib.request.Request(url, data=body, headers={
             "Content-Type": "application/json", "x-goog-api-key": key, "User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=min(timeout, remaining)) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             # 400 for the thinking setting: this model does not take it. Ask again without it.
@@ -976,10 +981,10 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
             per_minute = e.code == 429 and "PerMinute" in detail and "PerDay" not in detail
             spare = GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1
             if GEMINI_BUDGET is not None and per_minute:
+                turned_away(model, minutes=1)
                 if not spare:
                     raise  # every model is busy this minute: never retire one for the day over it
                 log(f"warning: Gemini {model}: per-minute limit; trying another model")
-                turned_away(model, minutes=1)
                 continue
             # 429 for the day: this model's free quota is gone (or tests used it up); 404: no such
             # model here. Either way skip the model for the rest of the day and ask the next one.
@@ -989,18 +994,20 @@ def gemini_json(prompt, key, model="gemini-flash-latest", timeout=90, lite_first
                 continue
             # 500/502/503/504: Google is overloaded right now. Another model may answer (up to all
             # the models are tried); the busy one stays available for later requests.
-            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504) and spare:
-                log(f"warning: Gemini {model}: HTTP {e.code}; trying another model")
+            if GEMINI_BUDGET is not None and e.code in (500, 502, 503, 504):
                 turned_away(model)
-                time.sleep(3)
-                continue
+                if spare:
+                    log(f"warning: Gemini {model}: HTTP {e.code}; trying another model")
+                    continue  # a different model has its own quota; no retry sleep is needed
             raise
         except (TimeoutError, urllib.error.URLError, OSError) as e:
             # No answer in time (an overloaded model can sit on a request): ask another model.
-            if GEMINI_BUDGET is not None and len(busy) < len(GEMINI_BUDGET.models) - 1:
-                log(f"warning: Gemini {model}: {e}; trying another model")
+            if GEMINI_BUDGET is not None:
+                spare = len(busy) < len(GEMINI_BUDGET.models) - 1
                 turned_away(model)
-                continue
+                if spare:
+                    log(f"warning: Gemini {model}: {e}; trying another model")
+                    continue
             raise
         try:
             # Models sometimes add a second JSON value or a remark after the answer: keep the first value.
@@ -1086,13 +1093,15 @@ Answer only with a JSON array, one object per item in the same order:
 """
 
 
-def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instructions=None, lite_first=False):
+def gemini_classify(items, key, model, sectors, focus_sectors, told=(), instructions=None, lite_first=False,
+                    deadline=None):
     rows = [{"i": n, "title": it["title"], "summary": short_summary(it)} for n, it in enumerate(items)]
     prompt = ((instructions or CLASSIFY_PROMPT) + "\nSECTORS: " + json.dumps(sectors + ["기타"], ensure_ascii=False)
               + "\nFOCUS_SECTORS: " + json.dumps(focus_sectors + ["기타"], ensure_ascii=False)
               + "\nALREADY_SENT: " + json.dumps(list(told)[-150:], ensure_ascii=False)
               + "\n\nItems:\n" + json.dumps(rows, ensure_ascii=False))
-    out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first, think=True)  # 15 items with translations
+    out = gemini_json(prompt, key, model, timeout=90, lite_first=lite_first, think=True,
+                      deadline=deadline)  # 15 items with translations
     if not isinstance(out, list) or len(out) != len(items):
         raise ValueError("classification list does not match the input")
     by_i = {r.get("i"): r for r in out if isinstance(r, dict)}
@@ -1147,17 +1156,17 @@ class GeminiClassifier:
             if isinstance(hit, list) and len(hit) == 2 and isinstance(hit[0], dict):
                 remember(it, dict(hit[0]), hit[1])
         head = [it for it in head if id(it) not in judged]
-        started = time.monotonic()
+        deadline = time.monotonic() + self.deadline
         for i in range(0, len(head), self.chunk):
             part = head[i:i + self.chunk]
-            if i and time.monotonic() - started > self.deadline:
+            if time.monotonic() >= deadline:
                 # Google is slow today: the rest keep keyword results rather than run past the job's limit.
                 log(f"warning: Gemini classification stopped after {self.deadline // 60} minutes; keeping keyword results")
                 failed = self.failed = True
                 break
             try:
                 results = gemini_classify(part, self.key, self.model, self.sectors, self.focus_sectors, told,
-                                          self.instructions, self.lite_first)
+                                          self.instructions, self.lite_first, deadline)
                 for n, r in enumerate(results):
                     d = r.get("dup_of")
                     if isinstance(d, int) and not isinstance(d, bool) and 0 <= d < len(part) and d != n:
@@ -1933,14 +1942,57 @@ def fill_article_dates(groups, config, fetcher):
     log(f"publication dates: {hits} cached, {attempted_count} fetched, {len(jobs) - attempted_count} deferred by budget")
 
 
+def fetch_feeds(config, fetcher):
+    """Overlap feed I/O, with at most six requests and two per hostname.
+    Return results in settings order so duplicate preference and feed numbers stay stable."""
+    feeds = config["feeds"]
+    workers = max(1, min(6, int(config.get("feed_workers", 6))))
+
+    def read(feed):
+        try:
+            raw = (fetcher(feed["url"], timeout=float(feed.get("timeout_seconds", 20)))
+                   if fetcher is fetch else fetcher(feed["url"]))
+            return raw, None
+        except Exception as error:
+            return None, error
+
+    if workers == 1 or len(feeds) < 2:
+        return [read(feed) for feed in feeds]
+    hosts = []
+    for feed in feeds:
+        try:
+            hosts.append(urllib.parse.urlsplit(feed["url"]).hostname or feed["url"])
+        except (ValueError, KeyError, TypeError):
+            hosts.append("")  # read() reports the malformed address like any other feed failure
+    results = [None] * len(feeds)
+    pending, active, per_host = list(range(len(feeds))), {}, {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        while pending or active:
+            for n in pending[:]:
+                if len(active) >= workers:
+                    break
+                host = hosts[n]
+                if per_host.get(host, 0) >= 2:
+                    continue
+                pending.remove(n)
+                per_host[host] = per_host.get(host, 0) + 1
+                active[pool.submit(read, feeds[n])] = (n, host)
+            done, _ = concurrent.futures.wait(active, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                n, host = active.pop(future)
+                per_host[host] -= 1
+                results[n] = future.result()
+    return results
+
+
 def collect(config, fetcher=fetch, failed=None, counts=None):
     started = time.monotonic()
     items, dates = [], []
     blocked = [b.strip().lower() for b in config.get("blocked_outlets", []) if b.strip()]
-    for n, feed in enumerate(config["feeds"]):
+    for n, (feed, (raw, error)) in enumerate(zip(config["feeds"], fetch_feeds(config, fetcher))):
         try:
-            raw = (fetcher(feed["url"], timeout=float(feed.get("timeout_seconds", 20)))
-                   if fetcher is fetch else fetcher(feed["url"]))
+            if error is not None:
+                raise error
             kind = feed.get("type", "rss")
             parser = {"rss": parse_feed, "cisa_kev": parse_kev}.get(kind) or PARSERS[kind]
             date_tz = ZoneInfo(feed["date_timezone"]) if feed.get("date_timezone") else timezone.utc
